@@ -42,9 +42,19 @@ CLAUDE_MODEL       = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")  # or c
 MAPPING_CARD  = 7753
 BUSINESS_CARD = 10353
 CATEGORY_CARD = 10362
+CARDS = (MAPPING_CARD, BUSINESS_CARD, CATEGORY_CARD)
 BUSINESS_SELLER_PARAM_ID = "a45e1c84-6dc1-42fc-93da-79f43ee84255"  # card 10353
 CATEGORY_SELLER_PARAM_ID = "232ba3d0-4861-4ebd-8775-5f8b9d488737"  # card 10362
-MAPPING_TTL = 30 * 60  # refresh the 43k-row mapping cache every 30 min
+
+# --- caching / quota control ---
+# Each card's seller_id filter is OPTIONAL, so we pull ALL sellers in ONE scan and
+# cache by seller_id. Every lookup is then free; we only scan once per refresh.
+# Cards 10353/10362 scan ~15 GB EACH, so NEVER query them per-seller in a loop.
+BULK_TTL    = int(os.environ.get("BULK_TTL", str(20 * 3600)))   # cache lifetime (s)
+CACHE_DIR   = os.environ.get("CACHE_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
+SEED_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")  # snapshot bundled with deploy
+REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN", "")            # protects /api/refresh
+ALLOW_LIVE_PULL = os.environ.get("ALLOW_LIVE_PULL", "1") == "1"  # set 0 on serverless to forbid request-time scans
 
 from benchmarks import BENCHMARKS  # hard-coded category benchmarks, keyed by primary_l2
 
@@ -91,44 +101,99 @@ def _mb(path, method="GET", body=None):
 
 
 # ----------------------------------------------------------------------------
-# Mapping cache (card 7753 returns ~43k rows — load once, refresh on TTL)
+# Bulk cache — one scan pulls ALL sellers for a card; lookups served from memory.
+# Layers (newest wins): in-memory -> disk (CACHE_DIR) -> bundled snapshot (SEED_DIR)
+# -> live full pull. A failed pull (e.g. quota) falls back to any stale cache.
 # ----------------------------------------------------------------------------
-_mapping = {"by_id": {}, "ts": 0}
-_mapping_lock = threading.Lock()
+import gzip
+from collections import defaultdict
+
+_bulk = {}                              # card_id -> {"by_id": {...}, "ts": float}
+_bulk_locks = defaultdict(threading.Lock)
 
 
-def _load_mapping():
-    rows = _mb(f"/api/card/{MAPPING_CARD}/query/json", "POST", {})
-    by_id = {str(r.get("seller_id")): r for r in rows if r.get("seller_id")}
-    _mapping["by_id"] = by_id
-    _mapping["ts"] = time.time()
-    return by_id
+def _bulk_file(card_id, directory):
+    return os.path.join(directory, f"card_{card_id}.json.gz")
 
 
-def _get_mapping(seller_id):
-    with _mapping_lock:
-        if not _mapping["by_id"] or (time.time() - _mapping["ts"] > MAPPING_TTL):
-            _load_mapping()
-    return _mapping["by_id"].get(str(seller_id))
+def _disk_read(card_id):
+    """Return the freshest on-disk cache (runtime dir or bundled seed), or None."""
+    best = None
+    for d in (CACHE_DIR, SEED_DIR):
+        p = _bulk_file(card_id, d)
+        if os.path.exists(p):
+            try:
+                with gzip.open(p, "rt", encoding="utf-8") as f:
+                    obj = json.load(f)
+                if best is None or obj.get("ts", 0) > best.get("ts", 0):
+                    best = obj
+            except Exception:
+                pass
+    return best
 
 
-def _run_param_card(card_id, param_id, seller_id):
-    params = [{
-        "type": "string/=",
-        "value": str(seller_id),
-        "id": param_id,
-        "target": ["variable", ["template-tag", "seller_id"]],
-    }]
-    rows = _mb(f"/api/card/{card_id}/query/json", "POST", {"parameters": params})
-    return rows[0] if isinstance(rows, list) and rows else None
+def _disk_write(card_id, by_id, ts):
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        tmp = _bulk_file(card_id, CACHE_DIR) + ".tmp"
+        with gzip.open(tmp, "wt", encoding="utf-8") as f:
+            json.dump({"ts": ts, "by_id": by_id}, f)
+        os.replace(tmp, _bulk_file(card_id, CACHE_DIR))
+    except Exception:
+        pass
 
 
-def _get_business(seller_id):
-    return _run_param_card(BUSINESS_CARD, BUSINESS_SELLER_PARAM_ID, seller_id)
+def _pull_card_all(card_id):
+    """Run the card with NO seller filter -> all sellers in one scan, indexed by id."""
+    rows = _mb(f"/api/card/{card_id}/query/json", "POST", {})
+    return {str(r["seller_id"]): r for r in rows if isinstance(r, dict) and r.get("seller_id")}
 
 
-def _get_category(seller_id):
-    return _run_param_card(CATEGORY_CARD, CATEGORY_SELLER_PARAM_ID, seller_id)
+def _refresh_card(card_id):
+    """Force a live full pull for one card, update memory + disk. Raises on failure."""
+    by_id = _pull_card_all(card_id)
+    ts = time.time()
+    _bulk[card_id] = {"by_id": by_id, "ts": ts}
+    _disk_write(card_id, by_id, ts)
+    return len(by_id)
+
+
+def _get_card_cache(card_id):
+    """Return {seller_id: row} for a card, using cache; pull live only if stale & allowed."""
+    with _bulk_locks[card_id]:
+        mem = _bulk.get(card_id)
+        if mem and (time.time() - mem["ts"] < BULK_TTL):
+            return mem["by_id"]
+
+        disk = _disk_read(card_id)
+        if disk and (time.time() - disk.get("ts", 0) < BULK_TTL):
+            _bulk[card_id] = {"by_id": disk["by_id"], "ts": disk.get("ts", time.time())}
+            return _bulk[card_id]["by_id"]
+
+        # stale/empty -> try a live full pull (one scan, all sellers)
+        if ALLOW_LIVE_PULL:
+            try:
+                _refresh_card(card_id)
+                return _bulk[card_id]["by_id"]
+            except HTTPException:
+                pass  # e.g. BigQuery quota — fall through to any stale cache
+
+        # last resort: any stale cache we have (better than nothing)
+        if mem:
+            return mem["by_id"]
+        if disk:
+            _bulk[card_id] = {"by_id": disk["by_id"], "ts": disk.get("ts", 0)}
+            return disk["by_id"]
+        raise HTTPException(503, f"No data available for card {card_id} (cache empty and live pull unavailable)")
+
+
+def refresh_all():
+    """Force-refresh every card (used by snapshot.py and /api/refresh)."""
+    out = {}
+    for cid in CARDS:
+        with _bulk_locks[cid]:
+            out[cid] = _refresh_card(cid)
+    return out
 
 
 def _clean(v):
@@ -164,14 +229,33 @@ class PlanReq(BaseModel):
 
 @app.get("/api/health")
 def health():
+    cache = {}
+    for cid in CARDS:
+        c = _bulk.get(cid) or _disk_read(cid) or {}
+        cache[str(cid)] = {
+            "sellers": len(c.get("by_id", {})),
+            "age_hours": round((time.time() - c.get("ts", 0)) / 3600, 1) if c.get("ts") else None,
+        }
     return {
         "ok": True,
         "metabase": bool(MB_USER and MB_PASS),
         "claude": bool(ANTHROPIC_API_KEY),
         "model": CLAUDE_MODEL,
         "claude_base_url": ANTHROPIC_BASE_URL or "api.anthropic.com (direct)",
-        "mapping_cached": len(_mapping["by_id"]),
+        "cache": cache,
     }
+
+
+@app.post("/api/refresh")
+def refresh(token: str = ""):
+    """Force a full re-pull of all cards (one scan each, all sellers). Token-protected."""
+    if REFRESH_TOKEN and token != REFRESH_TOKEN:
+        raise HTTPException(401, "invalid or missing refresh token")
+    try:
+        counts = refresh_all()
+    except HTTPException as e:
+        raise e
+    return {"refreshed": {str(k): v for k, v in counts.items()}}
 
 
 @app.post("/api/seller")
@@ -180,9 +264,15 @@ def seller(req: SellerReq):
     if not sid:
         raise HTTPException(400, "seller_id is required")
 
-    m = _get_mapping(sid) or {}
-    b = _get_business(sid) or {}
-    cat = _get_category(sid) or {}
+    # all three come from cache (one scan per card serves every seller)
+    def lookup(card_id):
+        try:
+            return _get_card_cache(card_id).get(sid) or {}
+        except HTTPException:
+            return {}
+    m   = lookup(MAPPING_CARD)
+    b   = lookup(BUSINESS_CARD)
+    cat = lookup(CATEGORY_CARD)
     if not m and not b and not cat:
         raise HTTPException(404, f"No data found for seller_id '{sid}'")
 
