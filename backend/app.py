@@ -26,6 +26,7 @@ except ImportError:
     pass
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
 # ----------------------------------------------------------------------------
@@ -225,6 +226,22 @@ class SellerReq(BaseModel):
 class PlanReq(BaseModel):
     seller: dict
     mode: str = "hits"
+
+
+_INDEX_PATHS = [
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "index.html"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html"),
+]
+
+
+@app.get("/")
+def home():
+    """Serve the frontend at the API root (bundled index.html), else redirect to Pages."""
+    for p in _INDEX_PATHS:
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as f:
+                return HTMLResponse(f.read())
+    return RedirectResponse("https://pawankumar-pkaytsk.github.io/troubleshoot-tool/")
 
 
 @app.get("/api/health")
