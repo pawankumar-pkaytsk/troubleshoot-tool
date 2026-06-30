@@ -338,11 +338,12 @@
    CONFIG — resolves the backend base URL, with graceful sample fallback.
    Priority:  ?api=...   >   localStorage.API_BASE   >   none (sample mode)
    ========================================================================= */
+const DEFAULT_API = 'https://troubleshoot-tool-sooty.vercel.app';  // live backend (Vercel)
 const API_BASE = (() => {
   const q = new URLSearchParams(location.search).get('api');
-  if (q) { try { localStorage.setItem('API_BASE', q); } catch(e){} return q.replace(/\/$/, ''); }
-  try { const s = localStorage.getItem('API_BASE'); if (s) return s.replace(/\/$/, ''); } catch(e){}
-  return '';
+  if (q !== null) { try { localStorage.setItem('API_BASE', q); } catch(e){} return q.replace(/\/$/, ''); }
+  try { const s = localStorage.getItem('API_BASE'); if (s !== null) return s.replace(/\/$/, ''); } catch(e){}
+  return DEFAULT_API;
 })();
 
 const STATE = { mode:'hits', seller:null, live:false };
