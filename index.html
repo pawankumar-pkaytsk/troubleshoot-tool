@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Meta Account Troubleshoot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#0b0f1a;
+    --bg-2:#0f1525;
+    --panel:#141b2e;
+    --panel-2:#1a2238;
+    --line:#26304a;
+    --txt:#e8edf7;
+    --muted:#94a0bd;
+    --brand:#5b7cff;
+    --brand-2:#7c5bff;
+    --green:#2dd4a7;
+    --amber:#f5b14c;
+    --red:#ff6b6b;
+    --hits:#5b7cff;
+    --growth:#2dd4a7;
+    --radius:16px;
+    --shadow:0 20px 50px -20px rgba(0,0,0,.6);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:'Inter',system-ui,sans-serif;
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(124,91,255,.18), transparent 60%),
+      radial-gradient(1000px 500px at -10% 10%, rgba(91,124,255,.16), transparent 55%),
+      var(--bg);
+    color:var(--txt);
+    min-height:100vh;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1120px;margin:0 auto;padding:28px 22px 80px}
+  h1,h2,h3,.brand{font-family:'Plus Jakarta Sans',sans-serif}
+
+  /* Header */
+  header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:36px}
+  .brand{display:flex;align-items:center;gap:12px;font-weight:800;font-size:18px;letter-spacing:-.02em}
+  .logo{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,var(--brand),var(--brand-2));display:grid;place-items:center;font-size:20px;box-shadow:0 8px 20px -6px rgba(91,124,255,.6)}
+  .badge{font-size:12px;color:var(--muted);border:1px solid var(--line);padding:6px 12px;border-radius:999px;background:rgba(255,255,255,.02)}
+
+  /* Hero */
+  .hero{text-align:center;margin-bottom:34px}
+  .hero h1{font-size:clamp(28px,4vw,42px);font-weight:800;letter-spacing:-.03em;line-height:1.1}
+  .hero h1 span{background:linear-gradient(120deg,var(--brand),var(--brand-2),var(--green));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero p{color:var(--muted);margin-top:12px;font-size:15px;max-width:620px;margin-left:auto;margin-right:auto}
+
+  /* Mode cards */
+  .modes{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:8px}
+  @media(max-width:680px){.modes{grid-template-columns:1fr}}
+  .mode-card{
+    position:relative;cursor:pointer;border:1px solid var(--line);background:linear-gradient(180deg,var(--panel),var(--bg-2));
+    border-radius:var(--radius);padding:26px;transition:.18s;overflow:hidden;
+  }
+  .mode-card:hover{transform:translateY(-3px);border-color:var(--brand);box-shadow:var(--shadow)}
+  .mode-card.active{border-color:var(--brand);box-shadow:0 0 0 1px var(--brand) inset,var(--shadow)}
+  .mode-card .ico{width:48px;height:48px;border-radius:13px;display:grid;place-items:center;font-size:24px;margin-bottom:16px}
+  .mode-card.hits .ico{background:rgba(91,124,255,.14);border:1px solid rgba(91,124,255,.3)}
+  .mode-card.growth .ico{background:rgba(45,212,167,.14);border:1px solid rgba(45,212,167,.3)}
+  .mode-card h3{font-size:19px;font-weight:700}
+  .mode-card p{color:var(--muted);font-size:13.5px;margin-top:6px;line-height:1.5}
+  .mode-card .tag{position:absolute;top:18px;right:18px;font-size:11px;font-weight:600;color:var(--muted);border:1px solid var(--line);padding:4px 10px;border-radius:999px}
+
+  /* Workspace */
+  .workspace{display:none;margin-top:26px}
+  .workspace.show{display:block;animation:fade .3s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+  .wkhead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px;flex-wrap:wrap}
+  .wkhead .left{display:flex;align-items:center;gap:12px}
+  .pill{font-size:13px;font-weight:600;padding:7px 14px;border-radius:999px;border:1px solid var(--line)}
+  .pill.hits{color:var(--hits);background:rgba(91,124,255,.1);border-color:rgba(91,124,255,.3)}
+  .pill.growth{color:var(--growth);background:rgba(45,212,167,.1);border-color:rgba(45,212,167,.3)}
+  .btn-ghost{background:transparent;border:1px solid var(--line);color:var(--muted);padding:8px 14px;border-radius:10px;cursor:pointer;font-size:13px;font-weight:500;transition:.15s}
+  .btn-ghost:hover{color:var(--txt);border-color:var(--brand)}
+
+  .card{background:linear-gradient(180deg,var(--panel),var(--bg-2));border:1px solid var(--line);border-radius:var(--radius);padding:22px}
+
+  /* Search */
+  .search-row{display:flex;gap:12px;flex-wrap:wrap}
+  .search-row input{
+    flex:1;min-width:220px;background:var(--bg);border:1px solid var(--line);color:var(--txt);
+    padding:14px 16px;border-radius:12px;font-size:15px;outline:none;transition:.15s;font-family:inherit;
+  }
+  .search-row input:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(91,124,255,.18)}
+  .btn{
+    border:none;cursor:pointer;font-weight:600;font-size:14px;padding:14px 22px;border-radius:12px;
+    background:linear-gradient(135deg,var(--brand),var(--brand-2));color:#fff;transition:.15s;white-space:nowrap;
+    box-shadow:0 10px 24px -10px rgba(91,124,255,.7);
+  }
+  .btn:hover{filter:brightness(1.08);transform:translateY(-1px)}
+  .btn:disabled{opacity:.55;cursor:not-allowed;transform:none}
+  .hint{color:var(--muted);font-size:12.5px;margin-top:10px}
+
+  /* Loading */
+  .loader{display:none;align-items:center;gap:12px;color:var(--muted);font-size:14px;margin-top:22px}
+  .loader.show{display:flex}
+  .spin{width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--brand);border-radius:50%;animation:rot .7s linear infinite}
+  @keyframes rot{to{transform:rotate(360deg)}}
+
+  /* Results */
+  .results{display:none;margin-top:24px}
+  .results.show{display:block;animation:fade .3s ease}
+  .section-title{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600;margin:0 0 14px}
+
+  .seller-head{display:flex;align-items:center;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+  .avatar{width:54px;height:54px;border-radius:14px;background:linear-gradient(135deg,var(--brand),var(--brand-2));display:grid;place-items:center;font-weight:800;font-size:22px}
+  .seller-head .meta h2{font-size:20px;font-weight:700}
+  .seller-head .meta .sub{color:var(--muted);font-size:13px;margin-top:3px}
+  .status-chip{margin-left:auto;font-size:12px;font-weight:600;padding:7px 13px;border-radius:999px}
+  .s-ok{background:rgba(45,212,167,.13);color:var(--green);border:1px solid rgba(45,212,167,.3)}
+  .s-warn{background:rgba(245,177,76,.13);color:var(--amber);border:1px solid rgba(245,177,76,.3)}
+  .s-bad{background:rgba(255,107,107,.13);color:var(--red);border:1px solid rgba(255,107,107,.3)}
+
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+  @media(max-width:880px){.grid{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:460px){.grid{grid-template-columns:1fr}}
+  .kpi{background:var(--bg);border:1px solid var(--line);border-radius:13px;padding:16px}
+  .kpi .k{color:var(--muted);font-size:12px;font-weight:500}
+  .kpi .v{font-size:22px;font-weight:700;margin-top:6px;letter-spacing:-.02em}
+  .kpi .d{font-size:12px;margin-top:5px;font-weight:600}
+  .up{color:var(--green)} .down{color:var(--red)} .flat{color:var(--muted)}
+
+  .detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px}
+  @media(max-width:680px){.detail-grid{grid-template-columns:1fr}}
+  .kv{display:flex;justify-content:space-between;gap:14px;padding:11px 0;border-bottom:1px dashed var(--line);font-size:14px}
+  .kv:last-child{border-bottom:none}
+  .kv .key{color:var(--muted)}
+  .kv .val{font-weight:600;text-align:right}
+
+  /* Plan */
+  .plan-cta{margin-top:26px;display:flex;justify-content:center}
+  .btn-lg{padding:16px 30px;font-size:15px;border-radius:14px}
+  .plan{display:none;margin-top:26px}
+  .plan.show{display:block;animation:fade .3s ease}
+
+  .tabs{display:flex;gap:8px;background:var(--bg);border:1px solid var(--line);padding:6px;border-radius:14px;margin-bottom:18px;flex-wrap:wrap}
+  .tab{flex:1;min-width:150px;text-align:center;padding:11px 14px;border-radius:10px;cursor:pointer;font-size:13.5px;font-weight:600;color:var(--muted);transition:.15s;border:none;background:transparent;font-family:inherit}
+  .tab:hover{color:var(--txt)}
+  .tab.active{background:linear-gradient(135deg,var(--brand),var(--brand-2));color:#fff;box-shadow:0 8px 18px -8px rgba(91,124,255,.7)}
+  .tabpane{display:none}
+  .tabpane.active{display:block;animation:fade .25s ease}
+
+  .action{display:flex;gap:14px;padding:16px;border:1px solid var(--line);border-radius:13px;background:var(--bg);margin-bottom:12px}
+  .action .n{width:30px;height:30px;border-radius:9px;background:rgba(91,124,255,.14);border:1px solid rgba(91,124,255,.3);color:var(--brand);display:grid;place-items:center;font-weight:700;font-size:14px;flex-shrink:0}
+  .action .body h4{font-size:15px;font-weight:700}
+  .action .body p{color:var(--muted);font-size:13.5px;margin-top:5px;line-height:1.55}
+  .prio{display:inline-block;font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;margin-top:9px}
+  .p-high{background:rgba(255,107,107,.13);color:var(--red)}
+  .p-med{background:rgba(245,177,76,.13);color:var(--amber)}
+  .p-low{background:rgba(45,212,167,.13);color:var(--green)}
+
+  .empty{color:var(--muted);font-size:14px;text-align:center;padding:30px}
+
+  footer{text-align:center;color:var(--muted);font-size:12.5px;margin-top:50px;line-height:1.6}
+  footer code{background:var(--panel-2);padding:2px 7px;border-radius:6px;font-size:11.5px;color:var(--brand)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand"><div class="logo">⚡</div> Meta Account Troubleshoot</div>
+    <div class="badge">Live Tool · v0.1</div>
+  </header>
+
+  <!-- HOME -->
+  <div id="home">
+    <div class="hero">
+      <h1>Diagnose any seller, get a <span>next plan of action</span></h1>
+      <p>Pick a track, drop in a Seller ID, and pull the full account picture — then generate a strategy across website, campaign, and out-of-the-box plays.</p>
+    </div>
+
+    <div class="modes">
+      <div class="mode-card hits" data-mode="hits" onclick="openMode('hits')">
+        <span class="tag">Track 1</span>
+        <div class="ico">🚀</div>
+        <h3>HITS Troubleshoot</h3>
+        <p>For HITS-managed accounts. Deep diagnostics on spend, ROAS and funnel health with HITS-specific playbooks.</p>
+      </div>
+      <div class="mode-card growth" data-mode="growth" onclick="openMode('growth')">
+        <span class="tag">Track 2</span>
+        <div class="ico">📈</div>
+        <h3>1k–5k Troubleshoot</h3>
+        <p>For sellers in the 1k–5k weekly spend band. Scale-up diagnostics and growth-unlock recommendations.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- WORKSPACE -->
+  <div id="workspace" class="workspace">
+    <div class="wkhead">
+      <div class="left">
+        <span id="modePill" class="pill hits">HITS Troubleshoot</span>
+      </div>
+      <button class="btn-ghost" onclick="goHome()">← Back to tracks</button>
+    </div>
+
+    <div class="card">
+      <p class="section-title">Seller lookup</p>
+      <div class="search-row">
+        <input id="sellerId" type="text" placeholder="Enter Seller ID (e.g. SD-104872)" onkeydown="if(event.key==='Enter')fetchSeller()" />
+        <button class="btn" id="fetchBtn" onclick="fetchSeller()">Fetch details</button>
+      </div>
+      <p class="hint">Tip: try any ID — sample data is shown until the live data source is connected.</p>
+    </div>
+
+    <div id="loader" class="loader"><div class="spin"></div> Pulling account data…</div>
+
+    <!-- RESULTS -->
+    <div id="results" class="results">
+      <div class="card">
+        <div class="seller-head">
+          <div class="avatar" id="avatar">S</div>
+          <div class="meta">
+            <h2 id="sellerName">Seller</h2>
+            <div class="sub" id="sellerSub">—</div>
+          </div>
+          <div class="status-chip" id="statusChip">—</div>
+        </div>
+
+        <div class="grid" id="kpis"></div>
+
+        <p class="section-title" style="margin-top:24px">Account details</p>
+        <div class="detail-grid" id="details"></div>
+      </div>
+
+      <div class="plan-cta">
+        <button class="btn btn-lg" onclick="generatePlan()">✦ Give next plan of action</button>
+      </div>
+
+      <!-- PLAN -->
+      <div id="plan" class="plan">
+        <div class="card">
+          <p class="section-title">Recommended strategy</p>
+          <div class="tabs">
+            <button class="tab active" onclick="switchTab(0)">🌐 Website actions</button>
+            <button class="tab" onclick="switchTab(1)">🎯 Campaign actions</button>
+            <button class="tab" onclick="switchTab(2)">💡 Out of the box</button>
+          </div>
+          <div class="tabpane active" id="pane0"></div>
+          <div class="tabpane" id="pane1"></div>
+          <div class="tabpane" id="pane2"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    Data source: <code>sample / mock</code> — wire the live source in <code>fetchSellerData()</code> inside this file.<br/>
+    Meta Account Troubleshoot · built for the HITS / Growth team
+  </footer>
+</div>
+
+<script>
+/* =========================================================================
+   CONFIG — wire your live backend / AI agent here later
+   ========================================================================= */
+const CONFIG = {
+  // Set to your backend endpoint when ready. Leave empty to use mock data.
+  // e.g. "https://your-api.com/seller" -> POST {sellerId, mode}
+  DATA_API: "",
+  // Set to your AI plan endpoint when ready. Leave empty to use rule-based mock.
+  // e.g. "https://your-api.com/plan" -> POST {seller, mode}
+  PLAN_API: ""
+};
+
+let STATE = { mode: "hits", seller: null };
+
+/* ---------- Navigation ---------- */
+function openMode(mode){
+  STATE.mode = mode;
+  document.getElementById('home').style.display = 'none';
+  const ws = document.getElementById('workspace'); ws.classList.add('show');
+  const pill = document.getElementById('modePill');
+  if(mode === 'hits'){ pill.className='pill hits'; pill.textContent='HITS Troubleshoot'; }
+  else { pill.className='pill growth'; pill.textContent='1k–5k Troubleshoot'; }
+  resetResults();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+function goHome(){
+  document.getElementById('workspace').classList.remove('show');
+  document.getElementById('home').style.display = 'block';
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+function resetResults(){
+  document.getElementById('results').classList.remove('show');
+  document.getElementById('plan').classList.remove('show');
+  document.getElementById('sellerId').value = '';
+}
+
+/* ---------- Fetch seller ----------
+   Replace fetchSellerData() body with a real API call when ready.
+*/
+async function fetchSellerData(sellerId, mode){
+  if(CONFIG.DATA_API){
+    const r = await fetch(CONFIG.DATA_API, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ sellerId, mode })
+    });
+    if(!r.ok) throw new Error('API error '+r.status);
+    return await r.json();
+  }
+  // ---- MOCK DATA (placeholder until live source is fed) ----
+  await new Promise(res=>setTimeout(res, 900));
+  const seed = [...sellerId].reduce((a,c)=>a+c.charCodeAt(0),0) || 7;
+  const r = (min,max)=> Math.round((min + ((seed*9301+49297)%233280)/233280 * (max-min)));
+  const spend = r(1200, 5400);
+  const roas = (r(80,340)/100);
+  const statuses = [['Healthy','s-ok'],['Needs attention','s-warn'],['At risk','s-bad']];
+  const st = statuses[seed % 3];
+  return {
+    sellerId,
+    name: "Seller "+sellerId.toUpperCase(),
+    category: ["Apparel","Home & Kitchen","Beauty","Electronics","Footwear"][seed%5],
+    region: ["North","South","East","West"][seed%4],
+    status: st,
+    kpis: [
+      {k:"Weekly Spend", v:"₹"+spend.toLocaleString(), d:(seed%2?"+":"−")+r(2,18)+"% WoW", cls:seed%2?"up":"down"},
+      {k:"ROAS", v:roas.toFixed(2)+"x", d:roas>2?"above target":"below target", cls:roas>2?"up":"down"},
+      {k:"Orders (7d)", v:r(20,260), d:(seed%2?"+":"−")+r(1,22)+"%", cls:seed%2?"up":"down"},
+      {k:"CTR", v:(r(60,260)/100).toFixed(2)+"%", d:"vs 1.8% bench", cls:"flat"},
+    ],
+    details: [
+      ["Account ID", sellerId.toUpperCase()],
+      ["Onboarded", "FY"+r(22,25)+" · "+["Q1","Q2","Q3","Q4"][seed%4]],
+      ["Daily Budget", "₹"+r(180,900).toLocaleString()],
+      ["Active Campaigns", r(1,9)],
+      ["CPM", "₹"+r(60,340)],
+      ["Conversion Rate", (r(40,260)/100).toFixed(2)+"%"],
+      ["Website Health", ["Good","Average","Poor"][seed%3]],
+      ["Pixel Status", seed%4 ? "Firing" : "Issues detected"],
+    ],
+    flags: {
+      lowRoas: roas < 2,
+      websitePoor: seed%3===2,
+      pixelIssue: seed%4===0,
+      lowCtr: r(60,260)/100 < 1.2
+    }
+  };
+}
+
+async function fetchSeller(){
+  const id = document.getElementById('sellerId').value.trim();
+  if(!id){ document.getElementById('sellerId').focus(); return; }
+  const btn = document.getElementById('fetchBtn');
+  btn.disabled = true;
+  document.getElementById('results').classList.remove('show');
+  document.getElementById('plan').classList.remove('show');
+  document.getElementById('loader').classList.add('show');
+  try{
+    const data = await fetchSellerData(id, STATE.mode);
+    STATE.seller = data;
+    renderSeller(data);
+    document.getElementById('results').classList.add('show');
+  }catch(e){
+    alert('Could not fetch seller: '+e.message);
+  }finally{
+    btn.disabled = false;
+    document.getElementById('loader').classList.remove('show');
+  }
+}
+
+function renderSeller(d){
+  document.getElementById('avatar').textContent = (d.name||'S')[0].toUpperCase();
+  document.getElementById('sellerName').textContent = d.name;
+  document.getElementById('sellerSub').textContent = `${d.category} · ${d.region} · ${STATE.mode==='hits'?'HITS':'1k–5k'} track`;
+  const chip = document.getElementById('statusChip');
+  chip.className = 'status-chip '+d.status[1];
+  chip.textContent = d.status[0];
+
+  document.getElementById('kpis').innerHTML = d.kpis.map(x=>`
+    <div class="kpi"><div class="k">${x.k}</div><div class="v">${x.v}</div><div class="d ${x.cls}">${x.d}</div></div>
+  `).join('');
+
+  document.getElementById('details').innerHTML = d.details.map(([k,v])=>`
+    <div class="kv"><span class="key">${k}</span><span class="val">${v}</span></div>
+  `).join('');
+}
+
+/* ---------- Generate plan ----------
+   Replace generatePlanData() with an AI-agent call when ready (see PLAN_API).
+*/
+async function generatePlanData(seller, mode){
+  if(CONFIG.PLAN_API){
+    const r = await fetch(CONFIG.PLAN_API, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ seller, mode })
+    });
+    if(!r.ok) throw new Error('Plan API error '+r.status);
+    return await r.json(); // expects {website:[], campaign:[], outside:[]}
+  }
+  // ---- RULE-BASED MOCK PLAN (placeholder) ----
+  const f = seller.flags || {};
+  const website = [];
+  const campaign = [];
+  const outside = [];
+
+  website.push({t:"Audit landing page load speed", d:"Run PageSpeed on top 3 product pages; target <2.5s LCP. Compress hero images and defer non-critical JS.", p:"med"});
+  if(f.websitePoor) website.push({t:"Fix website health issues", d:"Website health is flagged Poor — review broken links, mobile layout and checkout friction. This directly caps conversion.", p:"high"});
+  if(f.pixelIssue) website.push({t:"Repair Meta Pixel / CAPI", d:"Pixel shows issues — events aren't firing reliably, so optimization is blind. Reinstall pixel and enable Conversions API.", p:"high"});
+  website.push({t:"Strengthen product detail pages", d:"Add trust badges, clearer pricing, and 3+ lifestyle images per SKU to lift add-to-cart rate.", p:"low"});
+
+  if(f.lowRoas) campaign.push({t:"Restructure for ROAS recovery", d:"ROAS is below target. Consolidate ad sets, kill bottom 20% creatives by spend, and shift budget to the top ROAS audience.", p:"high"});
+  campaign.push({t:"Refresh creative angles", d:"Launch 3 new creatives testing distinct hooks (price, social proof, problem-solution) against the current winner.", p:"med"});
+  if(f.lowCtr) campaign.push({t:"Lift CTR with hook testing", d:"CTR is under benchmark — test thumb-stopping first 3 seconds and bolder primary text variants.", p:"high"});
+  campaign.push({t:"Expand winning audience", d:"Build 1% and 1–3% lookalikes from recent purchasers and layer onto the best-performing ad set.", p:"low"});
+
+  outside.push({t:"Test WhatsApp / retention loop", d:"Re-engage past buyers with a WhatsApp broadcast or abandoned-cart flow — cheap incremental revenue outside paid.", p:"med"});
+  outside.push({t:mode==='hits'?"Trigger HITS incentive play":"Unlock scale incentive", d:mode==='hits'?"Account qualifies for a HITS incentive nudge — pair a spend target with the recovery plan to accelerate.":"Offer a tiered spend incentive to push from the 1k–5k band into the next tier.", p:"med"});
+  outside.push({t:"Try a creator / UGC collab", d:"Source 2–3 UGC videos from micro-creators in the category and run them as fresh paid creative.", p:"low"});
+
+  await new Promise(res=>setTimeout(res, 700));
+  return { website, campaign, outside };
+}
+
+async function generatePlan(){
+  const plan = document.getElementById('plan');
+  plan.classList.add('show');
+  ['pane0','pane1','pane2'].forEach(id=>document.getElementById(id).innerHTML='<div class="empty"><span class="spin" style="display:inline-block"></span></div>');
+  plan.scrollIntoView({behavior:'smooth',block:'nearest'});
+  try{
+    const data = await generatePlanData(STATE.seller, STATE.mode);
+    renderPlan('pane0', data.website);
+    renderPlan('pane1', data.campaign);
+    renderPlan('pane2', data.outside);
+  }catch(e){
+    document.getElementById('pane0').innerHTML = '<div class="empty">Could not generate plan: '+e.message+'</div>';
+  }
+}
+
+function renderPlan(paneId, items){
+  const el = document.getElementById(paneId);
+  if(!items || !items.length){ el.innerHTML='<div class="empty">No actions for this category.</div>'; return; }
+  el.innerHTML = items.map((a,i)=>`
+    <div class="action">
+      <div class="n">${i+1}</div>
+      <div class="body">
+        <h4>${a.t}</h4>
+        <p>${a.d}</p>
+        <span class="prio p-${a.p}">${a.p==='high'?'High priority':a.p==='med'?'Medium priority':'Nice to have'}</span>
+      </div>
+    </div>
+  `).join('');
+}
+
+function switchTab(i){
+  document.querySelectorAll('.tab').forEach((t,idx)=>t.classList.toggle('active', idx===i));
+  document.querySelectorAll('.tabpane').forEach((p,idx)=>p.classList.toggle('active', idx===i));
+}
+</script>
+</body>
+</html>
