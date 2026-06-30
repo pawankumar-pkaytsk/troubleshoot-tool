@@ -34,12 +34,16 @@ uvicorn app:app --reload --port 8000
 Then open the site pointed at it:
 `https://pawankumar-pkaytsk.github.io/troubleshoot-tool/?api=http://127.0.0.1:8000`
 
-### Get the Anthropic (Claude) API key
+### Claude credentials
 
-1. Go to **https://console.anthropic.com**
-2. **Settings → API keys → Create Key**
-3. Copy it into `backend/.env` as `ANTHROPIC_API_KEY=sk-ant-...`
-4. Add credits under **Billing** if the workspace has none.
+Two options in `backend/.env`:
+
+- **Direct Anthropic** — key from https://console.anthropic.com (Settings → API keys);
+  leave `ANTHROPIC_BASE_URL` unset.
+- **Via a proxy (LiteLLM, etc.)** — set `ANTHROPIC_BASE_URL` to the proxy and use its
+  key. Model name must exist on the proxy (check `GET {base_url}/v1/models`).
+
+`CLAUDE_MODEL=claude-opus-4-8` is the default.
 
 ### API
 

@@ -21,7 +21,7 @@ Run:
 import os, json, time, threading, urllib.request, urllib.error
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"), override=True)
 except ImportError:
     pass
 from fastapi import FastAPI, HTTPException
@@ -35,8 +35,9 @@ MB_URL   = os.environ.get("METABASE_URL", "https://metabase.kaip.in").rstrip("/"
 MB_USER  = os.environ.get("METABASE_USER_EMAIL", "")
 MB_PASS  = os.environ.get("METABASE_PASSWORD", "")
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL      = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")  # or claude-opus-4-8
+ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "").rstrip("/")  # optional proxy (e.g. LiteLLM)
+CLAUDE_MODEL       = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")  # or claude-opus-4-8
 
 MAPPING_CARD  = 7753
 BUSINESS_CARD = 10353
@@ -168,6 +169,7 @@ def health():
         "metabase": bool(MB_USER and MB_PASS),
         "claude": bool(ANTHROPIC_API_KEY),
         "model": CLAUDE_MODEL,
+        "claude_base_url": ANTHROPIC_BASE_URL or "api.anthropic.com (direct)",
         "mapping_cached": len(_mapping["by_id"]),
     }
 
@@ -268,7 +270,10 @@ def plan(req: PlanReq):
     except ImportError:
         raise HTTPException(500, "anthropic package not installed (pip install anthropic)")
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = anthropic.Anthropic(
+        api_key=ANTHROPIC_API_KEY,
+        **({"base_url": ANTHROPIC_BASE_URL} if ANTHROPIC_BASE_URL else {}),
+    )
     track = "HITS-managed account" if req.mode == "hits" else "seller in the 1k–5k weekly-spend band"
     sys_prompt = (
         "You are a senior Meta (Facebook/Instagram) ads strategist for an Indian D2C "
