@@ -40,8 +40,12 @@ CLAUDE_MODEL      = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")  # or cl
 
 MAPPING_CARD  = 7753
 BUSINESS_CARD = 10353
-BUSINESS_SELLER_PARAM_ID = "a45e1c84-6dc1-42fc-93da-79f43ee84255"  # from card 10353
+CATEGORY_CARD = 10362
+BUSINESS_SELLER_PARAM_ID = "a45e1c84-6dc1-42fc-93da-79f43ee84255"  # card 10353
+CATEGORY_SELLER_PARAM_ID = "232ba3d0-4861-4ebd-8775-5f8b9d488737"  # card 10362
 MAPPING_TTL = 30 * 60  # refresh the 43k-row mapping cache every 30 min
+
+from benchmarks import BENCHMARKS  # hard-coded category benchmarks, keyed by primary_l2
 
 # ----------------------------------------------------------------------------
 # Metabase client (stdlib only, with auto re-auth)
@@ -107,15 +111,23 @@ def _get_mapping(seller_id):
     return _mapping["by_id"].get(str(seller_id))
 
 
-def _get_business(seller_id):
+def _run_param_card(card_id, param_id, seller_id):
     params = [{
         "type": "string/=",
         "value": str(seller_id),
-        "id": BUSINESS_SELLER_PARAM_ID,
+        "id": param_id,
         "target": ["variable", ["template-tag", "seller_id"]],
     }]
-    rows = _mb(f"/api/card/{BUSINESS_CARD}/query/json", "POST", {"parameters": params})
+    rows = _mb(f"/api/card/{card_id}/query/json", "POST", {"parameters": params})
     return rows[0] if isinstance(rows, list) and rows else None
+
+
+def _get_business(seller_id):
+    return _run_param_card(BUSINESS_CARD, BUSINESS_SELLER_PARAM_ID, seller_id)
+
+
+def _get_category(seller_id):
+    return _run_param_card(CATEGORY_CARD, CATEGORY_SELLER_PARAM_ID, seller_id)
 
 
 def _clean(v):
@@ -168,7 +180,8 @@ def seller(req: SellerReq):
 
     m = _get_mapping(sid) or {}
     b = _get_business(sid) or {}
-    if not m and not b:
+    cat = _get_category(sid) or {}
+    if not m and not b and not cat:
         raise HTTPException(404, f"No data found for seller_id '{sid}'")
 
     mapping = {
@@ -193,6 +206,14 @@ def seller(req: SellerReq):
         "cogs_at_gl":        _clean(b.get("cogs_at_gl")),
     }
 
+    # category levels (10362): L1=primary_l2, L2=primary_l3, L3=primary_l4
+    l1 = _clean(cat.get("primary_l2"))
+    l2 = _clean(cat.get("primary_l3"))
+    l3 = _clean(cat.get("primary_l4"))
+    category = {"l1": l1, "l2": l2, "l3": l3}
+    # hard-coded benchmark for the seller's Category Level 1 (primary_l2)
+    benchmark = BENCHMARKS.get(l1) if l1 else None
+
     # derived readiness status (honest: based only on fields we actually have)
     if mapping["go_live"] == "Yes":
         status = ["Live", "s-ok"] if mapping["gm"] else ["Live · unassigned", "s-warn"]
@@ -208,6 +229,8 @@ def seller(req: SellerReq):
         "status": status,
         "mapping": mapping,
         "business": business,
+        "category": category,
+        "benchmark": benchmark,
     }
 
 
