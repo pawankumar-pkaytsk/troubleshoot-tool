@@ -64,6 +64,17 @@ CHANGELOG_DASHCARDS = [
     (825, 786,  "Communication & catalogue settings"),
     (3512, 5185, "Google marketing"),
 ]
+
+# Dashboard 398 — per-product marketplace DEMAND validation (db6, required seller filter).
+# High marketplace rating count = proven external demand -> safe to run campaigns on.
+DEMAND_DASHBOARD = 398
+DEMAND_DASHCARD = 2499
+DEMAND_CARD = 3425
+DEMAND_PARAM = {"seller": "c6ad588d", "image": "e35b7e93",
+                "rating_cutoff": "f54ccc7e", "significant": "abb1206b"}
+DEMAND_DEFAULTS = {"image": 92, "rating_cutoff": 10, "significant": 20}  # dashboard defaults
+DEMAND_TTL = 12 * 3600
+DEMAND_TOPN = 25
 BUSINESS_SELLER_PARAM_ID = "a45e1c84-6dc1-42fc-93da-79f43ee84255"  # card 10353
 CATEGORY_SELLER_PARAM_ID = "232ba3d0-4861-4ebd-8775-5f8b9d488737"  # card 10362
 
@@ -219,6 +230,62 @@ def _get_changelog(seller_id, start, end):
             kept.append(e)
     kept.sort(key=lambda e: e["date"], reverse=True)
     return kept[:150]
+
+
+_demand_cache = {}
+_demand_lock = threading.Lock()
+
+
+def _num(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return -1
+
+
+def _get_demand(seller_id):
+    """Per-product marketplace demand validation (dashboard 398). Best-effort + cached."""
+    with _demand_lock:
+        c = _demand_cache.get(seller_id)
+        if c and time.time() - c["ts"] < DEMAND_TTL:
+            return c["data"]
+    params = [
+        {"id": DEMAND_PARAM["seller"], "value": str(seller_id)},
+        {"id": DEMAND_PARAM["image"], "value": DEMAND_DEFAULTS["image"]},
+        {"id": DEMAND_PARAM["rating_cutoff"], "value": DEMAND_DEFAULTS["rating_cutoff"]},
+        {"id": DEMAND_PARAM["significant"], "value": DEMAND_DEFAULTS["significant"]},
+    ]
+    try:
+        rows = _mb(f"/api/dashboard/{DEMAND_DASHBOARD}/dashcard/{DEMAND_DASHCARD}/card/{DEMAND_CARD}/query/json",
+                   "POST", {"parameters": params})
+    except Exception:
+        return []
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            continue
+        out.append({
+            "product": _clean(r.get("product_name")) or _clean(r.get("product_id")),
+            "product_id": _clean(r.get("dashboard_product_id") or r.get("product_id")),
+            "link": _clean(r.get("product_link")),
+            "orders_30d": _clean(r.get("total_orders_in_last_30_days")),
+            "contribution_pct": _clean(r.get("product_contribution_perc")),
+            "our_price": _clean(r.get("avg_sku_selling_price")),
+            "our_cost": _clean(r.get("avg_sku_cost_price")),
+            "mp_rating_count": _clean(r.get("exact_max_life_time_rating_count")),
+            "mp_rating_site": _clean(r.get("exact_max_rating_website")),
+            "demand_price_min": _clean(r.get("exact_min_price_with_demand")),
+            "demand_price_max": _clean(r.get("exact_max_price_with_demand")),
+            "demand_price_avg": _clean(r.get("exact_avg_price_with_demand")),
+            "pq_score": _clean(r.get("lifetime_avg_pq_score")),
+            "is_unique": _clean(r.get("is_unique")),
+        })
+    # rank by marketplace rating count (demand strength), then recent orders
+    out.sort(key=lambda p: (_num(p["mp_rating_count"]), _num(p["orders_30d"])), reverse=True)
+    data = out[:DEMAND_TOPN]
+    with _demand_lock:
+        _demand_cache[seller_id] = {"data": data, "ts": time.time()}
+    return data
 
 
 def _refresh_card(card_id):
@@ -396,6 +463,12 @@ def seller(req: SellerReq):
     except Exception:
         changelog = []
 
+    # marketplace demand validation per product (dashboard 398) — best-effort, cached
+    try:
+        demand_products = _get_demand(sid)
+    except Exception:
+        demand_products = []
+
     if not m and not b and not b2 and not cat and not daily_metrics and not changelog:
         raise HTTPException(404, f"No data found for seller_id '{sid}'")
 
@@ -454,6 +527,7 @@ def seller(req: SellerReq):
         "range": {"start": start, "end": end},
         "daily_metrics": daily_metrics,
         "changelog": changelog,
+        "demand_products": demand_products,
     }
 
 
@@ -531,6 +605,12 @@ def plan(req: PlanReq):
         "right before that date and FLAG the suspected cause (e.g. 'CTR dropped 40% on 14 Jun, one day "
         "after a Website NavigationBar change on 13 Jun — likely culprit, revert/test'). Be explicit "
         "about the correlation and your confidence; say so if there's no clear link.\n"
+        "- From demand_products (per-product marketplace demand validation): mp_rating_count is the "
+        "external marketplace lifetime rating count for the matched product — high count = PROVEN demand. "
+        "FLAG which products are SAFE to scale campaigns on (validated demand, mp_rating_count >= 20) vs "
+        "those to HOLD (little/no marketplace demand). Recommend concentrating ad budget/catalogue pushes "
+        "on validated-demand products, and check our_price sits within the demand price band "
+        "(demand_price_min..demand_price_avg..demand_price_max) — flag mispriced winners.\n"
         "- Cross-reference: is the Meta ROAS above the P&L break-even ROAS? Are margins enough to scale?\n"
         "- Consider the website as the conversion surface.\n"
         "Then produce a concrete, prioritized next-plan-of-action. Every action must be specific and "

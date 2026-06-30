@@ -241,6 +241,22 @@
   .cl-by{font-size:11.5px;color:var(--txt-3);margin-top:5px}
   .cl-more{font-size:12px;color:var(--txt-3);text-align:center;padding:12px}
 
+  /* ---------- demand products ---------- */
+  .dp-note{font-size:11.5px;color:var(--txt-3);margin-bottom:12px}
+  .dp-note b{color:var(--txt-2)}
+  .dp-list{display:flex;flex-direction:column;max-height:420px;overflow:auto}
+  .dprod{display:flex;align-items:center;gap:14px;padding:12px 2px;border-bottom:1px dashed var(--line)}
+  .dprod:last-child{border-bottom:none}
+  .dp-main{flex:1;min-width:0}
+  .dp-name{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dp-meta{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--txt-2);margin-top:4px}
+  .dp-price{font-size:11.5px;color:var(--txt-3);margin-top:4px}
+  .dp-flag{flex-shrink:0;font-size:12px;font-weight:700;padding:6px 14px;border-radius:999px;text-align:center;min-width:64px}
+  .d-run{background:rgba(52,211,153,.14);color:var(--ok);border:1px solid rgba(52,211,153,.35)}
+  .d-test{background:rgba(245,191,36,.14);color:var(--warn);border:1px solid rgba(251,191,36,.35)}
+  .d-hold{background:rgba(251,113,133,.13);color:var(--bad);border:1px solid rgba(251,113,133,.32)}
+  .d-na{background:var(--surface-2);color:var(--txt-3);border:1px solid var(--line)}
+
   /* ---------- analysis inputs ---------- */
   .in-row{margin-bottom:16px}
   .in-label{display:block;font-size:13px;font-weight:600;margin-bottom:8px}
@@ -624,6 +640,44 @@ function changelogCard(events, range){
   return `<div class="card reveal" style="animation-delay:.15s">${head}<div class="cl-list">${rows}${more}</div></div>`;
 }
 
+/* ---------- marketplace demand (dashboard 398) ---------- */
+function demandFlag(rc){
+  const n = (rc==null||isNaN(+rc)) ? -1 : +rc;
+  if (n >= 20) return {cls:'d-run', label:'Run', hint:'Validated demand'};
+  if (n >= 10) return {cls:'d-test', label:'Test', hint:'Some demand'};
+  if (n >= 0)  return {cls:'d-hold', label:'Hold', hint:'Low demand'};
+  return {cls:'d-na', label:'No data', hint:'No marketplace match'};
+}
+function demandCard(items){
+  items = items || [];
+  const head = `<div class="label"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M8 17V9M13 17V5M18 17v-6"/></svg> High-demand products <span class="rng">marketplace rating validation</span>${items.length?`<span class="cl-count">${items.length}</span>`:''}</div>`;
+  if (!items.length){
+    return `<div class="card reveal" style="animation-delay:.155s">${head}<div class="empty" style="padding:18px">No marketplace demand data for this seller yet${(API_BASE&&STATE.live)?' (dashboard 398 — quota permitting).':'.'}</div></div>`;
+  }
+  const rows = items.slice(0,15).map(p=>{
+    const f = demandFlag(p.mp_rating_count);
+    const band = (p.demand_price_min!=null&&p.demand_price_max!=null)
+      ? `₹${Math.round(+p.demand_price_min)}–₹${Math.round(+p.demand_price_max)}` : '—';
+    const our = p.our_price!=null ? '₹'+Math.round(+p.our_price) : '—';
+    return `<div class="dprod">
+      <div class="dp-main">
+        <div class="dp-name">${esc(p.product||p.product_id||'Product')}</div>
+        <div class="dp-meta">
+          <span title="marketplace lifetime ratings">★ ${p.mp_rating_count==null?'—':(+p.mp_rating_count).toLocaleString('en-IN')} ratings${p.mp_rating_site?' · '+esc(p.mp_rating_site):''}</span>
+          <span>${p.orders_30d==null?'':((+p.orders_30d)+' orders/30d')}</span>
+          ${p.contribution_pct!=null?`<span>${(+p.contribution_pct).toFixed(1)}% contrib</span>`:''}
+        </div>
+        <div class="dp-price">Our ${our} · demand band ${band}</div>
+      </div>
+      <div class="dp-flag ${f.cls}" title="${f.hint}">${f.label}</div>
+    </div>`;
+  }).join('');
+  const more = items.length>15 ? `<div class="cl-more">+${items.length-15} more products</div>` : '';
+  return `<div class="card reveal" style="animation-delay:.155s">${head}
+    <div class="dp-note">★ = external marketplace ratings (proven demand). <b>Run</b> ≥20 · <b>Test</b> ≥10 · <b>Hold</b> below.</div>
+    <div class="dp-list">${rows}${more}</div></div>`;
+}
+
 function renderSeller(d){
   const m = d.mapping||{}, b = d.business||{};
   const ini = (d.company||'S').trim()[0].toUpperCase();
@@ -692,6 +746,8 @@ function renderSeller(d){
   ${trendCard(d.daily_metrics, d.range)}
 
   ${changelogCard(d.changelog, d.range)}
+
+  ${demandCard(d.demand_products)}
 
   ${inputsCard(d)}
 
@@ -888,7 +944,12 @@ function mockSeller(id, mode, start, end){
     business:{company:['Rudra Rage','Lumière Home','Nova Apparel','Bloom Beauty','PeakFit Gear'][seed%5],website:'www.example.com',contact:'9'+r(100000000,899999999),offers:['Buy 1 Get 1','Flat 20% off','Free shipping',null][seed%4],products_at_go_live:r(20,300),aov_at_gl:r(300,1400)+0.9,cogs_at_gl:r(10,45)},
     category:{l1:l1,l2:sub[0],l3:sub[1]}, benchmark:BENCHMARKS[l1],
     range:{start:start||metrics[0].date, end:end||metrics[metrics.length-1].date},
-    daily_metrics:metrics, changelog:changelog
+    daily_metrics:metrics, changelog:changelog,
+    demand_products:[
+      {product:'Embroidered Anarkali Kurti', product_id:'WE-ANRK-01', orders_30d:r(40,120), contribution_pct:r(8,18), our_price:1099, our_cost:480, mp_rating_count:r(140,900), mp_rating_site:'amazon', demand_price_min:899, demand_price_max:1499, demand_price_avg:1180, pq_score:4.3, is_unique:false},
+      {product:'Cotton Straight Pant', product_id:'WE-PANT-04', orders_30d:r(20,60), contribution_pct:r(4,9), our_price:699, our_cost:300, mp_rating_count:r(20,60), mp_rating_site:'flipkart', demand_price_min:599, demand_price_max:899, demand_price_avg:740, pq_score:4.0, is_unique:false},
+      {product:'Designer Dupatta (new SKU)', product_id:'WE-DUP-09', orders_30d:r(2,10), contribution_pct:r(1,3), our_price:499, our_cost:210, mp_rating_count:r(0,6), mp_rating_site:null, demand_price_min:null, demand_price_max:null, demand_price_avg:null, pq_score:null, is_unique:true}
+    ]
   }),700));
 }
 function mockPlan(seller, mode, inputs){
