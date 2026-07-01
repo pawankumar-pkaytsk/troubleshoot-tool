@@ -40,6 +40,11 @@ MB_PASS  = os.environ.get("METABASE_PASSWORD", "")
 ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "").rstrip("/")  # optional proxy (e.g. LiteLLM)
 CLAUDE_MODEL       = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")  # or claude-opus-4-8
+# Per-stage model tiering (default = CLAUDE_MODEL). To cut cost/budget, set specialists to
+# a cheaper model, e.g. SPECIALIST_MODEL=claude-sonnet-4-6, keep SYNTH_MODEL=claude-opus-4-8.
+ANALYST_MODEL      = os.environ.get("ANALYST_MODEL", CLAUDE_MODEL)
+SPECIALIST_MODEL   = os.environ.get("SPECIALIST_MODEL", CLAUDE_MODEL)
+SYNTH_MODEL        = os.environ.get("SYNTH_MODEL", CLAUDE_MODEL)
 
 MAPPING_CARD  = 7753
 BUSINESS_CARD = 10353
@@ -485,12 +490,17 @@ def _safe_call(fn, *args, default=None):
 
 
 class PlanReq(BaseModel):
-    seller: dict
+    seller: dict = {}
     mode: str = "hits"
     website: str = ""
     pnl_csv: str = ""          # P&L export (CSV text)
     meta_csv: str = ""         # Meta ad-account metrics export (CSV text)
     extra_csv: list[CsvFile] = []   # optional additional CSVs
+    # multi-agent staging (frontend-orchestrated): "full" | "analyst" | "specialist" | "synth"
+    stage: str = "full"
+    digest: str = ""           # analyst output, fed to specialist/synth
+    category: str = ""         # for stage=specialist: website|campaign|outside|scaleup
+    drafts: dict = {}          # for stage=synth: {category: [actions]}
 
 
 _INDEX_PATHS = [
@@ -671,6 +681,7 @@ PLAN_SCHEMA = {
         "outside":  {"type": "array", "items": {"$ref": "#/$defs/action"}},
         "scaleup":  {"type": "array", "items": {"$ref": "#/$defs/action"},
                      "description": "2K->5K scaling plan (1k-5k track only; empty for HITS)"},
+        "summary":  {"type": "string", "description": "2-4 sentence executive correlation summary across all categories"},
     },
     "required": ["website", "campaign", "outside"],
     "$defs": {
@@ -723,10 +734,147 @@ def _csv_block(title, text):
     return f"### {title}\n```csv\n{text}{truncated}\n```\n"
 
 
+# ---- multi-agent helpers ----------------------------------------------------
+ACTIONS_SCHEMA = {
+    "type": "object",
+    "properties": {"actions": {"type": "array", "items": {"$ref": "#/$defs/action"}}},
+    "required": ["actions"],
+    "$defs": {"action": {"type": "object", "properties": {
+        "t": {"type": "string"}, "d": {"type": "string"},
+        "p": {"type": "string", "enum": ["high", "med", "low"]}}, "required": ["t", "d", "p"]}},
+}
+
+SYNTH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string", "description": "2-4 sentence executive correlation summary"},
+        "top_priorities": {"type": "array", "items": {"type": "string"},
+                           "description": "3-5 highest-impact actions across all categories, in order"},
+    },
+    "required": ["summary", "top_priorities"],
+}
+
+SPECIALIST_ROLES = {
+    "website":  "a website / CRO specialist. Focus ONLY on the storefront as a conversion surface: "
+                "landing page & PDP quality, pixel/Conversions API tracking, catalogue hygiene, load speed, "
+                "trust/pricing/reviews, and any changelog website change that hurt conversion.",
+    "campaign": "a Meta ads campaign specialist. Focus ONLY on ad-account structure: campaign/ad-set/creative "
+                "performance, ROAS vs the P&L break-even ROAS, CTR/CPM/frequency, audience, budget allocation, "
+                "bidding — which campaigns to cut, cap, or scale.",
+    "outside":  "an out-of-the-box growth specialist. Focus ONLY on levers OUTSIDE website+campaigns: retention "
+                "(WhatsApp/win-back), COD->prepaid & RTO reduction, margin/COGS, pricing to the demand band, "
+                "creator/UGC, incentives.",
+    "scaleup":  "a 2K->5K scaling specialist. Apply the ShopDeck scaling playbook to THIS seller's data "
+                "(product concentration, audience opening, stock/RTO gates, campaign matrix, 20-30%/day, "
+                "HIT2 retargeting, ICP). Playbook:\n\n" + SCALEUP_PLAYBOOK,
+}
+
+
+def _anthropic():
+    try:
+        import anthropic
+    except ImportError:
+        raise HTTPException(500, "anthropic package not installed")
+    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY,
+                               **({"base_url": ANTHROPIC_BASE_URL} if ANTHROPIC_BASE_URL else {}))
+
+
+def _tool_call(client, system, user, schema, max_tokens=1600, tool="submit", model=None):
+    try:
+        msg = client.messages.create(
+            model=model or CLAUDE_MODEL, max_tokens=max_tokens, system=system,
+            tools=[{"name": tool, "description": "Submit structured output.", "input_schema": schema}],
+            tool_choice={"type": "tool", "name": tool},
+            messages=[{"role": "user", "content": user}])
+    except Exception as e:
+        msg_txt = str(e)
+        code = 429 if ("budget" in msg_txt.lower() or "rate" in msg_txt.lower() or "429" in msg_txt) else 502
+        raise HTTPException(code, f"Claude error: {msg_txt}")
+    for b in msg.content:
+        if getattr(b, "type", None) == "tool_use" and b.name == tool:
+            return b.input
+    raise HTTPException(502, "no structured output from Claude")
+
+
+def _data_block(req, website):
+    return (
+        f"Website: {website or '(not available)'}\n\n"
+        f"Seller account context (JSON — includes daily_metrics, weekly_pnl, buckets, last_ts, "
+        f"changelog, demand_products, pq):\n{json.dumps(req.seller, indent=2)}\n\n"
+        "=== UPLOADED DATA ===\n"
+        + _csv_block("P&L (profit & loss)", req.pnl_csv)
+        + _csv_block("Meta ad-account metrics", req.meta_csv)
+        + "".join(_csv_block(f"Additional: {f.name}", f.content) for f in (req.extra_csv or []))
+    )
+
+
 @app.post("/api/plan")
 def plan(req: PlanReq):
     if not ANTHROPIC_API_KEY:
         raise HTTPException(500, "ANTHROPIC_API_KEY not configured")
+    website = (req.website or req.seller.get("business", {}).get("website") or "").strip()
+    track = "HITS-managed account" if req.mode == "hits" else "seller in the 1k–5k weekly-spend band"
+
+    # ---- STAGE 1: analyst — read the raw data once, emit a compact factual digest ----
+    if req.stage == "analyst":
+        if not req.pnl_csv.strip() or not req.meta_csv.strip():
+            raise HTTPException(400, "Both a P&L CSV and a Meta ad-account metrics CSV are required")
+        client = _anthropic()
+        sysp = (
+            "You are a performance-marketing DATA ANALYST for an Indian D2C marketplace. Read the seller "
+            "context + P&L CSV + Meta metrics CSV and produce a TERSE, quantitative digest that specialist "
+            "strategists will build on. Cover, with numbers: break-even ROAS (from COGS+shipping+RTO); each "
+            "Meta campaign's spend/ROAS/CTR/CPM + over/under-performing verdict vs break-even; gross/"
+            "contribution margin & net profit; RTO signal; weekly P&L trajectory + bucket status; product "
+            "concentration & demand-validated winners (mp ratings); any changelog change that correlates with "
+            "a metric drop (with dates); PQ trend; and the 4-6 biggest risks & opportunities. No fluff, no "
+            "recommendations yet — just the facts and verdicts. Use short bullet lines."
+        )
+        try:
+            digest = "".join(b.text for b in client.messages.create(
+                model=ANALYST_MODEL, max_tokens=1600, system=sysp,
+                messages=[{"role": "user", "content": _data_block(req, website)}]).content
+                if getattr(b, "type", None) == "text")
+        except Exception as e:
+            raise HTTPException(502, f"Claude error (analyst): {e}")
+        return {"digest": digest.strip()}
+
+    # ---- STAGE 2: specialist — one focused agent per category, off the digest ----
+    if req.stage == "specialist":
+        cat = req.category
+        if cat not in SPECIALIST_ROLES:
+            raise HTTPException(400, f"unknown category '{cat}'")
+        client = _anthropic()
+        sysp = (
+            f"You are {SPECIALIST_ROLES[cat]}\n\nGiven the analyst's data digest below, produce 3-6 concrete, "
+            "prioritized actions ONLY for your area. Each action must cite the actual numbers/dates that "
+            "justify it. priority: 'high' = money-losing blocker / caused a drop, 'med' = clear lever, "
+            "'low' = nice-to-have. Return via the submit tool."
+        )
+        user = f"Seller track: {track}.\nWebsite: {website or '(n/a)'}\n\n=== ANALYST DIGEST ===\n{req.digest}"
+        out = _tool_call(client, sysp, user, ACTIONS_SCHEMA, max_tokens=1600, model=SPECIALIST_MODEL)
+        return {"category": cat, "actions": out.get("actions", [])}
+
+    # ---- STAGE 3: synthesizer — CORRELATE only (specialists own their categories) ----
+    if req.stage == "synth":
+        client = _anthropic()
+        sysp = (
+            "You are the LEAD strategist. You are given a data digest and the specialist agents' draft actions "
+            "(website, campaign, outside" + (", scaleup" if req.mode != "hits" else "") + "). Do NOT rewrite "
+            "the per-category actions. Instead CORRELATE across them: (1) write a 2-4 sentence executive "
+            "'summary' — what is really driving the problem and the single most important next move, tying "
+            "together the cross-cutting levers (e.g. an RTO/margin issue that gates scaling, or a website "
+            "change that caused a campaign drop); (2) return 'top_priorities' — the 3-5 highest-impact actions "
+            "ACROSS ALL categories, in order, each as one short imperative line prefixed with its area "
+            "(e.g. 'Campaign: cut the Open campaign at 2.2x — below break-even'). Return via submit."
+        )
+        user = (
+            f"Seller track: {track}.\n\n=== ANALYST DIGEST ===\n{req.digest}\n\n"
+            f"=== SPECIALIST DRAFTS (JSON) ===\n{json.dumps(req.drafts, indent=2)}"
+        )
+        return _tool_call(client, sysp, user, SYNTH_SCHEMA, max_tokens=1200, tool="submit", model=SYNTH_MODEL)
+
+    # ---- STAGE "full": legacy single-call (fallback) ----
     if not req.pnl_csv.strip() or not req.meta_csv.strip():
         raise HTTPException(400, "Both a P&L CSV and a Meta ad-account metrics CSV are required")
     try:
@@ -738,7 +886,6 @@ def plan(req: PlanReq):
         api_key=ANTHROPIC_API_KEY,
         **({"base_url": ANTHROPIC_BASE_URL} if ANTHROPIC_BASE_URL else {}),
     )
-    track = "HITS-managed account" if req.mode == "hits" else "seller in the 1k–5k weekly-spend band"
     website = (req.website or req.seller.get("business", {}).get("website") or "").strip()
 
     sys_prompt = (

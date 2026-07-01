@@ -282,6 +282,15 @@
   .pq-d{font-size:12px;font-weight:600;margin-top:4px}
   .pq-note{font-size:11.5px;color:var(--txt-3);margin-top:12px}
 
+  /* ---------- plan summary (synthesizer) ---------- */
+  .plan-summary{background:linear-gradient(180deg,var(--primary-soft),transparent);border:1px solid rgba(99,102,241,.3);border-radius:var(--r);padding:14px 16px;margin-bottom:16px}
+  .ps-title{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#a5b4fc;margin-bottom:7px}
+  .plan-summary p{margin:0;font-size:14px;line-height:1.6;color:var(--txt)}
+  .ps-prio{margin-top:12px}
+  .ps-prio-h{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--txt-3);margin-bottom:6px}
+  .ps-prio ol{margin:0;padding-left:20px}
+  .ps-prio li{font-size:13.5px;line-height:1.55;color:var(--txt-2);margin-bottom:4px}
+
   /* ---------- plan head + export ---------- */
   .plan-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap}
   .btn-export{display:inline-flex;align-items:center;gap:7px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;color:var(--txt);background:var(--surface-2);border:1px solid var(--line-strong);padding:9px 15px;border-radius:10px;transition:var(--fast)}
@@ -1091,13 +1100,59 @@ async function generatePlan(){
   const i = STATE.inputs || {};
   if(!(i.pnl && i.meta && (i.website||'').trim())){ updateGate(); return; }
   const wrap = document.getElementById('plan');
-  wrap.innerHTML = `<div class="card reveal"><div class="empty"><span class="spin" style="display:inline-block;vertical-align:middle"></span> &nbsp;${API_BASE?'Claude is deeply analysing the P&L + Meta metrics…':'Building plan…'}</div></div>`;
+  const prog = (msg)=>{ wrap.innerHTML = `<div class="card reveal"><div class="empty"><span class="spin" style="display:inline-block;vertical-align:middle"></span> &nbsp;${esc(msg)}</div></div>`; };
+  prog(API_BASE ? 'Starting multi-agent analysis…' : 'Building plan…');
   wrap.scrollIntoView({behavior:'smooth',block:'nearest'});
   let data;
-  try{ data = await apiPlan(STATE.seller, STATE.mode, i); }
-  catch(e){ wrap.innerHTML = `<div class="card"><div class="empty">Couldn't generate plan<br/>${esc(e.message)}</div></div>`; return; }
-
+  try{
+    data = API_BASE ? await runAgents(i, prog) : await mockPlan(STATE.seller, STATE.mode, i);
+  }catch(e){
+    wrap.innerHTML = `<div class="card"><div class="empty">Couldn't generate plan<br/>${esc(e.message)}</div></div>`;
+    return;
+  }
   STATE.lastPlan = data;  // for export
+  renderPlanCard(wrap, data);
+}
+
+/* Multi-agent orchestration: analyst -> 4 specialists (parallel) -> synthesizer.
+   Each agent is its own short request, so nothing hits the serverless timeout. */
+async function runAgents(i, prog){
+  const post = async (payload)=>{
+    const r = await fetch(API_BASE+'/api/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.detail||('API '+r.status)); }
+    return r.json();
+  };
+  const cats = planTabs().map(t=>t.key);
+  // 1) analyst reads the raw data once
+  prog('Agent 1 · Analyst reading your P&L + Meta data…');
+  const {digest} = await post({stage:'analyst', seller:STATE.seller, mode:STATE.mode,
+    website:i.website||'', pnl_csv:i.pnl?i.pnl.content:'', meta_csv:i.meta?i.meta.content:'',
+    extra_csv:(i.extra||[]).map(f=>({name:f.name,content:f.content}))});
+  // 2) specialists in parallel (one per category tab)
+  prog(`Agents 2–${cats.length+1} · ${cats.length} specialists working in parallel…`);
+  const results = await Promise.all(cats.map(c =>
+    post({stage:'specialist', mode:STATE.mode, website:i.website||'', category:c, digest})
+      .then(r=>({c, actions:r.actions||[]}))
+      .catch(e=>({c, actions:[], err:e.message}))
+  ));
+  const drafts = {}; let firstErr=''; STATE.agentErrors = {};
+  results.forEach(r=>{ drafts[r.c]=r.actions; if(r.err){ STATE.agentErrors[r.c]=r.err; if(!firstErr) firstErr=r.err; } });
+  if(Object.values(drafts).every(a=>!a.length) && firstErr) throw new Error(firstErr);
+  // 3) synthesizer correlates (categories stay owned by specialists)
+  prog('Final agent · Correlating & prioritizing across all areas…');
+  let synth = {summary:'', top_priorities:[]};
+  try{ synth = await post({stage:'synth', mode:STATE.mode, digest, drafts}); }catch(e){ /* keep drafts even if synth fails */ }
+  return {
+    website: drafts.website||[], campaign: drafts.campaign||[],
+    outside: drafts.outside||[], scaleup: drafts.scaleup||[],
+    summary: synth.summary||'', top_priorities: synth.top_priorities||[],
+  };
+}
+
+function renderPlanCard(wrap, data){
+  const prios = (data.top_priorities && data.top_priorities.length)
+    ? `<div class="ps-prio"><div class="ps-prio-h">Do first</div><ol>${data.top_priorities.map(p=>`<li>${esc(p)}</li>`).join('')}</ol></div>` : '';
+  const summary = (data.summary || prios) ? `<div class="plan-summary"><div class="ps-title"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm0 5v5l3 2"/></svg> Correlation summary</div>${data.summary?`<p>${esc(data.summary)}</p>`:''}${prios}</div>` : '';
   wrap.innerHTML = `
   <div class="card reveal">
     <div class="plan-head">
@@ -1107,14 +1162,15 @@ async function generatePlan(){
         Export plan (.txt)
       </button>
     </div>
+    ${summary}
     <div class="tabs" role="tablist">
       ${planTabs().map((t,i)=>`<button class="tab" role="tab" aria-selected="${i===0}" id="tab${i}" onclick="switchTab(${i})">
         <svg class="icon icon-sm" viewBox="0 0 24 24">${t.icon}</svg>${t.label}</button>`).join('')}
     </div>
-    ${planTabs().map((t,i)=>`<div class="pane ${i===0?'show':''}" id="pane${i}" role="tabpanel">${renderActions(data[t.key])}</div>`).join('')}
+    ${planTabs().map((t,i)=>`<div class="pane ${i===0?'show':''}" id="pane${i}" role="tabpanel">${paneContent(t.key, data[t.key])}</div>`).join('')}
     <div class="source-note">
       <svg class="icon icon-sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
-      ${API_BASE?'Generated live by Claude':'Sample plan — connect backend for live AI'}
+      ${API_BASE?`Generated by ${planTabs().length+2} Claude agents (analyst → ${planTabs().length} specialists → synthesizer)`:'Sample plan — connect backend for live AI'}
     </div>
   </div>`;
 }
@@ -1133,8 +1189,12 @@ function exportPlan(){
   if (d.category && d.category.l1) L.push('Category    : ' + [d.category.l1,d.category.l2,d.category.l3].filter(Boolean).join(' > '));
   if (d.range) L.push('Window      : ' + d.range.start + ' to ' + d.range.end);
   L.push('Generated   : ' + new Date().toLocaleString());
-  L.push('Source      : ' + (API_BASE ? 'Claude (live)' : 'sample'));
+  L.push('Source      : ' + (API_BASE ? 'Claude multi-agent (analyst -> specialists -> synthesizer)' : 'sample'));
   L.push('');
+  if (plan.summary){ L.push(line); L.push('CORRELATION SUMMARY'); L.push(line);
+    (plan.summary.match(/.{1,88}(\s|$)/g)||[plan.summary]).forEach(w=>L.push(w.trim())); L.push(''); }
+  if (plan.top_priorities && plan.top_priorities.length){ L.push('DO FIRST:');
+    plan.top_priorities.forEach((p,ix)=>L.push('  '+(ix+1)+'. '+p)); L.push(''); }
   planTabs().forEach(t=>{
     const items = plan[t.key] || [];
     L.push(line);
@@ -1156,6 +1216,12 @@ function exportPlan(){
   a.href = url; a.download = 'plan_of_action_' + safe + '.txt';
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(url), 2000);
+}
+function paneContent(key, items){
+  if(items && items.length) return renderActions(items);
+  const err = (STATE.agentErrors||{})[key];
+  if(err) return `<div class="empty">This agent couldn't complete (likely a rate/budget limit).<br/><span style="font-size:12px;color:var(--txt-3)">${esc(err)}</span><br/><br/>Raise the API budget or retry in a moment.</div>`;
+  return renderActions(items);
 }
 function renderActions(items){
   if(!items||!items.length) return '<div class="empty">No actions for this category.</div>';
