@@ -383,7 +383,10 @@
         <div class="brand-sub">Diagnostics &amp; AI plan of action</div>
       </div>
     </div>
-    <span class="pillbadge"><span class="dot" id="srcDot"></span><span id="srcText">Sample mode</span></span>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+      <span class="pillbadge" id="fundsBadge" style="display:none"></span>
+      <span class="pillbadge"><span class="dot" id="srcDot"></span><span id="srcText">Sample mode</span></span>
+    </div>
   </header>
 
   <!-- ============ HOME ============ -->
@@ -493,7 +496,22 @@ const STATE = { mode:'hits', seller:null, live:false, inputs:null };
   const dot = document.getElementById('srcDot'), txt = document.getElementById('srcText');
   if (!API_BASE){ txt.textContent = 'Sample mode'; dot.style.background = 'var(--warn)'; dot.style.boxShadow='0 0 0 3px rgba(251,191,36,.18)'; return; }
   checkHealthInner(0);
+  updateFunds();
 })();
+
+async function updateFunds(){
+  const b = document.getElementById('fundsBadge');
+  if(!API_BASE || !b) return;
+  try{
+    const f = await (await fetch(API_BASE+'/api/funds',{cache:'no-store'})).json();
+    if(!f.available){ b.style.display='none'; return; }
+    const pct = f.max_budget ? f.remaining/f.max_budget : 1;
+    const color = pct>0.25 ? 'var(--ok)' : (pct>0.1 ? 'var(--warn)' : 'var(--bad)');
+    b.style.display='inline-flex';
+    b.title = pct<=0.1 ? 'Low AI funds — recharge the LiteLLM key soon' : 'Remaining AI budget';
+    b.innerHTML = `<svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h14v4"/><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3"/><path d="M16 13h5v-3h-5a1.5 1.5 0 0 0 0 3Z"/></svg> AI funds <b style="color:${color}">$${f.remaining.toFixed(2)}</b> <span style="color:var(--txt-3)">/ $${f.max_budget}</span>`;
+  }catch(e){ /* leave hidden */ }
+}
 async function checkHealthInner(attempt){
   const dot = document.getElementById('srcDot'), txt = document.getElementById('srcText');
   txt.textContent = attempt ? 'Connecting…' : txt.textContent;
@@ -955,6 +973,16 @@ function renderSeller(d){
   document.getElementById('results').innerHTML = html;
   // reset & wire the analysis inputs (website prefilled from card 10353/10352)
   STATE.inputs = { website: (d.business && d.business.website) || '', pnl:null, meta:null, extra:[] };
+  // P&L is auto-extracted from card 1880 (user can still override by uploading)
+  if (d.pnl_csv){
+    STATE.inputs.pnl = { name:'card_1880_pnl.csv', content:d.pnl_csv, auto:true };
+    const tile = document.getElementById('tile-pnl');
+    if (tile){
+      tile.classList.add('done');
+      document.getElementById('hint-pnl').textContent = `Auto-loaded from card 1880 · ${d.pnl_weeks||''} weeks — click to override`;
+      document.getElementById('check-pnl').innerHTML = '<svg class="icon" viewBox="0 0 24 24" style="color:var(--ok)"><path d="M20 6 9 17l-5-5"/></svg>';
+    }
+  }
   updateGate();
   loadInsights(d);   // lazily load changelog + demand (slow queries) without blocking render
 }
@@ -999,7 +1027,7 @@ function inputsCard(d){
     </div>
 
     <div class="uploads">
-      ${uploadTile('pnl','P&L file (CSV)','Revenue, COGS, margins, spend, returns…')}
+      ${uploadTile('pnl','P&L file (CSV)','Auto-fetched from card 1880 by Seller ID — or upload your own')}
       ${uploadTile('meta','Meta ad metrics (CSV)','Spend, ROAS, CTR, CPM, conversions…')}
     </div>
 
@@ -1112,6 +1140,7 @@ async function generatePlan(){
   }
   STATE.lastPlan = data;  // for export
   renderPlanCard(wrap, data);
+  updateFunds();  // refresh remaining AI budget after the multi-agent run
 }
 
 /* Multi-agent orchestration: analyst -> 4 specialists (parallel) -> synthesizer.

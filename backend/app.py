@@ -54,6 +54,9 @@ CATEGORY_CARD = 3773    # "seller level category mapping - L2" (db6, seller-leve
 METRICS_CARD  = 10773   # daily spend/CPM/CTR/s_gmv time series (all HIT sellers, no params)
 WEEKLY_PNL_CARD = 11011 # week-1/2/3 spend + P&L per seller (no params)
 LAST_TS_CARD    = 10189 # last troubleshoot details + actions per seller (optional seller filter)
+PNL_CARD = 1880         # full weekly P&L (db2, cheap) — auto-fills the P&L upload
+PNL_SELLER_PARAM = "dc33c41d-bd5b-2eab-2dd9-07f2a8e9d6f8"
+PNL_WEEKS = 26          # keep the most recent N weeks for the P&L CSV
 # Bulk-cached cards (pulled param-less = all sellers in one scan).
 CARDS = (MAPPING_CARD, BUSINESS_CARD, BUSINESS_BACKUP_CARD, CATEGORY_CARD,
          METRICS_CARD, WEEKLY_PNL_CARD, LAST_TS_CARD)
@@ -252,6 +255,30 @@ def _get_changelog(seller_id, start, end):
 
 _category_cache = {}
 _category_lock = threading.Lock()
+
+
+def _get_pnl_csv(seller_id):
+    """P&L CSV auto-extracted from card 1880 (db2) for a seller — recent weeks, as CSV text."""
+    params = [{"type": "string/=", "value": str(seller_id), "id": PNL_SELLER_PARAM,
+               "target": ["variable", ["template-tag", "seller_id"]]}]
+    try:
+        rows = _mb(f"/api/card/{PNL_CARD}/query/json", "POST", {"parameters": params})
+    except Exception:
+        return "", 0
+    if not isinstance(rows, list) or not rows:
+        return "", 0
+    rows = [r for r in rows if isinstance(r, dict)]
+    rows.sort(key=lambda r: str(r.get("year_week", "")), reverse=True)
+    rows = rows[:PNL_WEEKS][::-1]  # most recent N, chronological
+    import io
+    import csv as _csvmod
+    cols = list(rows[0].keys())
+    buf = io.StringIO()
+    w = _csvmod.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    w.writeheader()
+    for r in rows:
+        w.writerow({k: r.get(k) for k in cols})
+    return buf.getvalue(), len(rows)
 
 
 def _get_category(seller_id):
@@ -533,6 +560,29 @@ def health():
     }
 
 
+FUNDS_MODEL = os.environ.get("FUNDS_MODEL", "claude-haiku-4-5-20251001")  # cheapest, for the funds ping
+
+
+@app.get("/api/funds")
+def funds():
+    """Report remaining AI budget via LiteLLM's response headers (x-litellm-key-*)."""
+    if not (ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL):
+        return {"available": False}
+    try:
+        client = _anthropic()
+        raw = client.messages.with_raw_response.create(
+            model=FUNDS_MODEL, max_tokens=1, messages=[{"role": "user", "content": "."}])
+        h = raw.headers
+        mb, sp = h.get("x-litellm-key-max-budget"), h.get("x-litellm-key-spend")
+        if mb is None or sp is None:
+            return {"available": False}
+        mb, sp = float(mb), float(sp)
+        return {"available": True, "max_budget": round(mb, 2), "spend": round(sp, 4),
+                "remaining": round(mb - sp, 2), "currency": "USD"}
+    except Exception:
+        return {"available": False}
+
+
 @app.post("/api/refresh")
 def refresh(token: str = ""):
     """Force a full re-pull of all cards (one scan each, all sellers). Token-protected."""
@@ -584,6 +634,10 @@ def seller(req: SellerReq):
     pq = {"lifetime": _clean(_latest("lifetime_avg_pq")), "last_15d": _clean(_latest("last_15d_avg_pd"))}
 
     cat = lookup(CATEGORY_CARD)   # seller-level category (card 3773), from bulk cache
+    try:
+        pnl_csv, pnl_weeks = _get_pnl_csv(sid)   # auto P&L from card 1880 (db2, cheap)
+    except Exception:
+        pnl_csv, pnl_weeks = "", 0
     changelog = []          # loaded via POST /api/insights
     demand_products = []     # loaded via POST /api/insights
 
@@ -667,6 +721,8 @@ def seller(req: SellerReq):
         "weekly_pnl": weekly_pnl,
         "buckets": buckets,
         "last_ts": last_ts,
+        "pnl_csv": pnl_csv,
+        "pnl_weeks": pnl_weeks,
     }
 
 
@@ -853,7 +909,10 @@ def plan(req: PlanReq):
         )
         user = f"Seller track: {track}.\nWebsite: {website or '(n/a)'}\n\n=== ANALYST DIGEST ===\n{req.digest}"
         out = _tool_call(client, sysp, user, ACTIONS_SCHEMA, max_tokens=1600, model=SPECIALIST_MODEL)
-        return {"category": cat, "actions": out.get("actions", [])}
+        actions = out.get("actions", [])
+        if not actions:  # one retry — occasionally the model returns an empty tool call
+            actions = _tool_call(client, sysp, user, ACTIONS_SCHEMA, max_tokens=1600, model=SPECIALIST_MODEL).get("actions", [])
+        return {"category": cat, "actions": actions}
 
     # ---- STAGE 3: synthesizer — CORRELATE only (specialists own their categories) ----
     if req.stage == "synth":
