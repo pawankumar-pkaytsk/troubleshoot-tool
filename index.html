@@ -257,6 +257,22 @@
   .d-hold{background:rgba(251,113,133,.13);color:var(--bad);border:1px solid rgba(251,113,133,.32)}
   .d-na{background:var(--surface-2);color:var(--txt-3);border:1px solid var(--line)}
 
+  /* ---------- weekly P&L ---------- */
+  .wk-grid{display:flex;align-items:stretch;gap:10px}
+  .wk{flex:1;padding:14px;border:1px solid var(--line);border-radius:var(--r);background:var(--bg);text-align:center}
+  .wk-h{font-size:11px;font-weight:700;color:var(--txt-3);letter-spacing:.05em}
+  .wk-spend{font-size:18px;font-weight:700;margin-top:8px;letter-spacing:-.02em}
+  .wk-pnl{font-size:17px;font-weight:700;margin-top:10px}
+  .wk-lbl{font-size:10.5px;color:var(--txt-3);margin-top:2px}
+  .wk-arrow{display:flex;align-items:center;color:var(--txt-3)}
+  @media(max-width:520px){.wk-arrow{display:none}.wk-grid{flex-wrap:wrap}.wk{min-width:30%}}
+
+  /* ---------- last troubleshoot ---------- */
+  .ts-meta{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--txt-2);margin-bottom:14px}
+  .ts-type{font-size:11px;font-weight:600;color:#a5b4fc;background:var(--primary-soft);border:1px solid rgba(99,102,241,.28);padding:2px 9px;border-radius:999px}
+  .ts-actions{background:var(--bg);border:1px solid var(--line);border-left:3px solid var(--primary);border-radius:var(--r);padding:14px 16px;font-size:13.5px;line-height:1.6;color:var(--txt);white-space:pre-wrap}
+  .ts-note{font-size:11.5px;color:var(--txt-3);margin-top:10px}
+
   /* ---------- analysis inputs ---------- */
   .in-row{margin-bottom:16px}
   .in-label{display:block;font-size:13px;font-weight:600;margin-bottom:8px}
@@ -435,12 +451,26 @@ const STATE = { mode:'hits', seller:null, live:false, inputs:null };
 (function initSource(){
   const dot = document.getElementById('srcDot'), txt = document.getElementById('srcText');
   if (!API_BASE){ txt.textContent = 'Sample mode'; dot.style.background = 'var(--warn)'; dot.style.boxShadow='0 0 0 3px rgba(251,191,36,.18)'; return; }
-  fetch(API_BASE + '/api/health').then(r=>r.json()).then(h=>{
+  checkHealthInner(0);
+})();
+async function checkHealthInner(attempt){
+  const dot = document.getElementById('srcDot'), txt = document.getElementById('srcText');
+  txt.textContent = attempt ? 'Connecting…' : txt.textContent;
+  try{
+    const ctrl = new AbortController(); const to = setTimeout(()=>ctrl.abort(), 12000);
+    const h = await (await fetch(API_BASE + '/api/health', {signal:ctrl.signal})).json();
+    clearTimeout(to);
     STATE.live = true;
     txt.textContent = 'Live · ' + (h.claude ? 'AI ready' : 'data only');
-    dot.style.background = 'var(--ok)';
-  }).catch(()=>{ txt.textContent = 'Backend offline · sample mode'; dot.style.background='var(--bad)'; dot.style.boxShadow='0 0 0 3px rgba(251,113,133,.18)'; });
-})();
+    dot.style.background = 'var(--ok)'; dot.style.boxShadow='0 0 0 3px rgba(52,211,153,.18)';
+  }catch(e){
+    if (attempt < 2){ setTimeout(()=>checkHealthInner(attempt+1), 1500*(attempt+1)); return; }
+    STATE.live = false;
+    txt.textContent = 'Backend waking · retrying';
+    dot.style.background='var(--bad)'; dot.style.boxShadow='0 0 0 3px rgba(251,113,133,.18)';
+    setTimeout(()=>checkHealthInner(0), 20000);
+  }
+}
 
 /* ---------- navigation ---------- */
 function openMode(mode){
@@ -495,7 +525,7 @@ async function apiPlan(seller, mode, inputs){
     meta_csv: inputs.meta ? inputs.meta.content : '',
     extra_csv: (inputs.extra || []).map(f => ({name:f.name, content:f.content})),
   };
-  if (API_BASE && STATE.live){
+  if (API_BASE){
     const r = await fetch(API_BASE+'/api/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.detail||('API '+r.status)); }
     return r.json();
@@ -594,7 +624,7 @@ function trendCard(metrics, range){
   const note = range ? `${range.start} → ${range.end}` : '';
   const head = `<div class="label"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-4 4"/></svg> Performance trend <span class="rng">${esc(note)}</span></div>`;
   if (!metrics.length){
-    return `<div class="card reveal" style="animation-delay:.14s">${head}<div class="empty" style="padding:18px">No daily metrics for this window yet${(API_BASE&&STATE.live)?' — built nightly from card 10773.':'.'}</div></div>`;
+    return `<div class="card reveal" style="animation-delay:.14s">${head}<div class="empty" style="padding:18px">No daily metrics for this window yet${API_BASE?' — built nightly from card 10773.':'.'}</div></div>`;
   }
   const col = k => metrics.map(r=>r[k]);
   const ends = k => { const a=col(k).filter(v=>v!=null&&!isNaN(+v)); return a.length?[+a[0],+a[a.length-1]]:null; };
@@ -652,7 +682,7 @@ function demandCard(items){
   items = items || [];
   const head = `<div class="label"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M8 17V9M13 17V5M18 17v-6"/></svg> High-demand products <span class="rng">marketplace rating validation</span>${items.length?`<span class="cl-count">${items.length}</span>`:''}</div>`;
   if (!items.length){
-    return `<div class="card reveal" style="animation-delay:.155s">${head}<div class="empty" style="padding:18px">No marketplace demand data for this seller yet${(API_BASE&&STATE.live)?' (dashboard 398 — quota permitting).':'.'}</div></div>`;
+    return `<div class="card reveal" style="animation-delay:.155s">${head}<div class="empty" style="padding:18px">No marketplace demand data for this seller yet${API_BASE?' (dashboard 398 — quota permitting).':'.'}</div></div>`;
   }
   const rows = items.slice(0,15).map(p=>{
     const f = demandFlag(p.mp_rating_count);
@@ -676,6 +706,50 @@ function demandCard(items){
   return `<div class="card reveal" style="animation-delay:.155s">${head}
     <div class="dp-note">★ = external marketplace ratings (proven demand). <b>Run</b> ≥20 · <b>Test</b> ≥10 · <b>Hold</b> below.</div>
     <div class="dp-list">${rows}${more}</div></div>`;
+}
+
+/* ---------- weekly P&L + spend (card 11011) ---------- */
+function weeklyPnlCard(wp){
+  wp = wp || {};
+  const head = `<div class="label"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg> Weekly P&amp;L &amp; spend${wp.best_source?`<span class="rng">source: ${esc(wp.best_source)}</span>`:''}</div>`;
+  const weeks=[['W1','w1_spend','w1_pnl'],['W2','w2_spend','w2_pnl'],['W3','w3_spend','w3_pnl']];
+  const has = weeks.some(([_,s,p])=>wp[s]!=null||wp[p]!=null);
+  if(!has){
+    return `<div class="card reveal" style="animation-delay:.142s">${head}<div class="empty" style="padding:18px">No weekly P&L for this seller yet${API_BASE?' (card 11011 — built nightly).':'.'}</div></div>`;
+  }
+  const money=v=>v==null?'—':'₹'+Number(v).toLocaleString('en-IN',{maximumFractionDigits:0});
+  const pnl=v=>v==null?'—':(Number(v)>=0?'+':'')+Number(v).toFixed(1)+'%';
+  const cells=weeks.map(([lbl,s,p])=>{
+    const pv=wp[p]; const cls=pv==null?'flat':(Number(pv)>=0?'up':'down');
+    return `<div class="wk">
+      <div class="wk-h">${lbl}</div>
+      <div class="wk-spend tnum">${money(wp[s])}</div>
+      <div class="wk-lbl">spend</div>
+      <div class="wk-pnl tnum ${cls}">${pnl(pv)}</div>
+      <div class="wk-lbl">P&amp;L</div>
+    </div>`;
+  }).join('<div class="wk-arrow"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></div>');
+  return `<div class="card reveal" style="animation-delay:.142s">${head}<div class="wk-grid">${cells}</div></div>`;
+}
+
+/* ---------- last troubleshoot (card 10189) ---------- */
+function lastTsCard(ts){
+  ts = ts || {};
+  const head = `<div class="label"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> Last troubleshoot${ts.total_ts_done!=null?`<span class="cl-count">${esc(ts.total_ts_done)} total</span>`:''}</div>`;
+  if(!ts.last_ts_actions && !ts.last_ts_date){
+    return `<div class="card reveal" style="animation-delay:.152s">${head}<div class="empty" style="padding:18px">No prior troubleshoot recorded for this seller.</div></div>`;
+  }
+  const meta=[
+    ts.last_ts_date?`<span><b>${esc(ts.last_ts_date)}</b></span>`:'',
+    ts.ts_type?`<span class="ts-type">${esc(ts.ts_type)}</span>`:'',
+    ts.last_7d_meta_spend!=null?`<span>last 7d spend ₹${Number(ts.last_7d_meta_spend).toLocaleString('en-IN',{maximumFractionDigits:0})}</span>`:'',
+  ].filter(Boolean).join('');
+  const actions = (ts.last_ts_actions||'').replace(/\|DETAILS\|/gi,'\n').replace(/\s*\|\s*/g,'\n').trim();
+  return `<div class="card reveal" style="animation-delay:.152s">${head}
+    <div class="ts-meta">${meta}</div>
+    <div class="ts-actions">${esc(actions)}</div>
+    <div class="ts-note">The AI reads these last actions and correlates them with current performance before recommending the next plan.</div>
+  </div>`;
 }
 
 function renderSeller(d){
@@ -745,7 +819,11 @@ function renderSeller(d){
 
   ${trendCard(d.daily_metrics, d.range)}
 
+  ${weeklyPnlCard(d.weekly_pnl)}
+
   ${changelogCard(d.changelog, d.range)}
+
+  ${lastTsCard(d.last_ts)}
 
   ${demandCard(d.demand_products)}
 
@@ -868,7 +946,7 @@ async function generatePlan(){
   const i = STATE.inputs || {};
   if(!(i.pnl && i.meta && (i.website||'').trim())){ updateGate(); return; }
   const wrap = document.getElementById('plan');
-  wrap.innerHTML = `<div class="card reveal"><div class="empty"><span class="spin" style="display:inline-block;vertical-align:middle"></span> &nbsp;${API_BASE&&STATE.live?'Claude is deeply analysing the P&L + Meta metrics…':'Building plan…'}</div></div>`;
+  wrap.innerHTML = `<div class="card reveal"><div class="empty"><span class="spin" style="display:inline-block;vertical-align:middle"></span> &nbsp;${API_BASE?'Claude is deeply analysing the P&L + Meta metrics…':'Building plan…'}</div></div>`;
   wrap.scrollIntoView({behavior:'smooth',block:'nearest'});
   let data;
   try{ data = await apiPlan(STATE.seller, STATE.mode, i); }
@@ -884,7 +962,7 @@ async function generatePlan(){
     ${TABS.map((t,i)=>`<div class="pane ${i===0?'show':''}" id="pane${i}" role="tabpanel">${renderActions(data[t.key])}</div>`).join('')}
     <div class="source-note">
       <svg class="icon icon-sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
-      ${API_BASE&&STATE.live?'Generated live by Claude':'Sample plan — connect backend for live AI'}
+      ${API_BASE?'Generated live by Claude':'Sample plan — connect backend for live AI'}
     </div>
   </div>`;
 }
@@ -945,6 +1023,8 @@ function mockSeller(id, mode, start, end){
     category:{l1:l1,l2:sub[0],l3:sub[1]}, benchmark:BENCHMARKS[l1],
     range:{start:start||metrics[0].date, end:end||metrics[metrics.length-1].date},
     daily_metrics:metrics, changelog:changelog,
+    weekly_pnl:{best_source:'new_pnl', w1_spend:r(15000,30000), w2_spend:r(15000,32000), w3_spend:r(18000,38000), w1_pnl:+(r(20,60)/10).toFixed(1), w2_pnl:+(r(-10,30)/10).toFixed(1), w3_pnl:+(r(-60,10)/10).toFixed(1)},
+    last_ts:{total_ts_done:r(2,10), last_ts_date:(end||metrics[metrics.length-1].date), ts_type:'manual_ts', last_7d_meta_spend:r(3000,9000), last_ts_actions:'Educate seller to not do a lot of Cancellation. |DETAILS| Seller Cancellation (8.82%) between last week is above the threshold of 5%. Reduce cancellations to protect delivery and ROAS.'},
     demand_products:[
       {product:'Embroidered Anarkali Kurti', product_id:'WE-ANRK-01', orders_30d:r(40,120), contribution_pct:r(8,18), our_price:1099, our_cost:480, mp_rating_count:r(140,900), mp_rating_site:'amazon', demand_price_min:899, demand_price_max:1499, demand_price_avg:1180, pq_score:4.3, is_unique:false},
       {product:'Cotton Straight Pant', product_id:'WE-PANT-04', orders_30d:r(20,60), contribution_pct:r(4,9), our_price:699, our_cost:300, mp_rating_count:r(20,60), mp_rating_site:'flipkart', demand_price_min:599, demand_price_max:899, demand_price_avg:740, pq_score:4.0, is_unique:false},

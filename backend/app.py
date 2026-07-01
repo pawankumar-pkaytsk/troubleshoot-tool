@@ -44,9 +44,14 @@ CLAUDE_MODEL       = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")  # or c
 MAPPING_CARD  = 7753
 BUSINESS_CARD = 10353
 BUSINESS_BACKUP_CARD = 10352   # lighter Category Intelligence card — website/company/contact backup
-CATEGORY_CARD = 10362
+CATEGORY_CARD = 10362   # db23 — REQUIRES seller_id (can't bulk); fetched per-seller
+CATEGORY_SELLER_PARAM = "232ba3d0-4861-4ebd-8775-5f8b9d488737"
 METRICS_CARD  = 10773   # daily spend/CPM/CTR/s_gmv time series (all HIT sellers, no params)
-CARDS = (MAPPING_CARD, BUSINESS_CARD, BUSINESS_BACKUP_CARD, CATEGORY_CARD, METRICS_CARD)
+WEEKLY_PNL_CARD = 11011 # week-1/2/3 spend + P&L per seller (no params)
+LAST_TS_CARD    = 10189 # last troubleshoot details + actions per seller (optional seller filter)
+# Bulk-cached cards (pulled param-less = all sellers in one scan). 10362 is NOT here.
+CARDS = (MAPPING_CARD, BUSINESS_CARD, BUSINESS_BACKUP_CARD,
+         METRICS_CARD, WEEKLY_PNL_CARD, LAST_TS_CARD)
 METRICS_KEEP_DAYS = 45  # trim each seller's series to the last N rows in the cache
 
 # Change Log dashboard 96 — per-seller, date-ranged change events (db 2, cheap).
@@ -230,6 +235,28 @@ def _get_changelog(seller_id, start, end):
             kept.append(e)
     kept.sort(key=lambda e: e["date"], reverse=True)
     return kept[:150]
+
+
+_category_cache = {}
+_category_lock = threading.Lock()
+
+
+def _get_category(seller_id):
+    """Category L1/L2/L3 (card 10362, db23) — requires seller_id, so per-seller + cached."""
+    with _category_lock:
+        c = _category_cache.get(seller_id)
+        if c and time.time() - c["ts"] < 12 * 3600:
+            return c["data"]
+    params = [{"type": "string/=", "value": str(seller_id), "id": CATEGORY_SELLER_PARAM,
+               "target": ["variable", ["template-tag", "seller_id"]]}]
+    try:
+        rows = _mb(f"/api/card/{CATEGORY_CARD}/query/json", "POST", {"parameters": params})
+    except Exception:
+        return {}
+    data = rows[0] if isinstance(rows, list) and rows else {}
+    with _category_lock:
+        _category_cache[seller_id] = {"data": data, "ts": time.time()}
+    return data
 
 
 _demand_cache = {}
@@ -444,7 +471,7 @@ def seller(req: SellerReq):
     m   = lookup(MAPPING_CARD)
     b   = lookup(BUSINESS_CARD)
     b2  = lookup(BUSINESS_BACKUP_CARD)   # backup for website/company/contact/offers
-    cat = lookup(CATEGORY_CARD)
+    cat = _get_category(sid)             # per-seller (10362 can't be bulk-pulled)
 
     # date range (default last 30 days)
     end = (req.end_date or date.today().isoformat())[:10]
@@ -468,6 +495,22 @@ def seller(req: SellerReq):
         demand_products = _get_demand(sid)
     except Exception:
         demand_products = []
+
+    # weekly P&L + spend (11011) and last troubleshoot details (10189) from cache
+    wp = lookup(WEEKLY_PNL_CARD)
+    ts = lookup(LAST_TS_CARD)
+    weekly_pnl = {
+        "best_source": _clean(wp.get("best_source")),
+        "w1_spend": _clean(wp.get("w1_spend")), "w2_spend": _clean(wp.get("w2_spend")), "w3_spend": _clean(wp.get("w3_spend")),
+        "w1_pnl": _clean(wp.get("w1_pnl")), "w2_pnl": _clean(wp.get("w2_pnl")), "w3_pnl": _clean(wp.get("w3_pnl")),
+    }
+    last_ts = {
+        "total_ts_done": _clean(ts.get("total_ts_done")),
+        "last_ts_date": _clean(ts.get("last_ts_date")),
+        "ts_type": _clean(ts.get("ts_type")),
+        "last_ts_actions": _clean(ts.get("last_ts_actions")),
+        "last_7d_meta_spend": _clean(ts.get("last_7_days__meta_spend")),
+    }
 
     if not m and not b and not b2 and not cat and not daily_metrics and not changelog:
         raise HTTPException(404, f"No data found for seller_id '{sid}'")
@@ -528,6 +571,8 @@ def seller(req: SellerReq):
         "daily_metrics": daily_metrics,
         "changelog": changelog,
         "demand_products": demand_products,
+        "weekly_pnl": weekly_pnl,
+        "last_ts": last_ts,
     }
 
 
@@ -605,6 +650,14 @@ def plan(req: PlanReq):
         "right before that date and FLAG the suspected cause (e.g. 'CTR dropped 40% on 14 Jun, one day "
         "after a Website NavigationBar change on 13 Jun — likely culprit, revert/test'). Be explicit "
         "about the correlation and your confidence; say so if there's no clear link.\n"
+        "- From weekly_pnl (w1/w2/w3 spend and P&L%): read the 3-week trajectory — is P&L improving or "
+        "declining, did it turn negative, is spend rising while P&L falls? Call out the trend explicitly.\n"
+        "- From last_ts (the PREVIOUS troubleshoot): last_ts_actions is what was advised last time (on "
+        "last_ts_date). CHECK the current data to judge whether those actions were done and whether they "
+        "worked (e.g. if last TS said 'reduce cancellation >5%', is cancellation still high now?). Do NOT "
+        "repeat actions that are now resolved; ESCALATE ones still unresolved; then give the NEXT actions. "
+        "Explicitly reference the last TS in at least one action (e.g. 'Last TS on 30 Jun flagged X — still "
+        "unresolved, escalate by …').\n"
         "- From demand_products (per-product marketplace demand validation): mp_rating_count is the "
         "external marketplace lifetime rating count for the matched product — high count = PROVEN demand. "
         "FLAG which products are SAFE to scale campaigns on (validated demand, mp_rating_count >= 20) vs "
