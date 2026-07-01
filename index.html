@@ -320,7 +320,9 @@
   .up-hint{font-size:12px;color:var(--txt-3);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .up-check{width:24px;flex-shrink:0}
   .extra-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
-  .filechip{font-size:12px;color:var(--txt-2);background:var(--surface-2);border:1px solid var(--line);padding:5px 11px;border-radius:999px}
+  .filechip{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--txt-2);background:var(--surface-2);border:1px solid var(--line);padding:5px 6px 5px 11px;border-radius:999px}
+  .chip-x{border:none;background:var(--line);color:var(--txt-2);width:17px;height:17px;border-radius:50%;cursor:pointer;font-size:13px;line-height:1;display:grid;place-items:center;padding:0;transition:var(--fast)}
+  .chip-x:hover{background:var(--bad);color:#fff}
   .gate-hint{text-align:center;font-size:12.5px;color:var(--txt-3);margin-top:12px}
 
   /* ---------- plan ---------- */
@@ -1036,12 +1038,27 @@ async function onFile(kind, el){
 }
 async function onExtraFiles(el){
   const files=[...(el.files||[])];
-  STATE.inputs.extra = [];
-  for(const f of files){ try{ STATE.inputs.extra.push({name:f.name, content:await readCsv(f)}); }catch(e){} }
-  document.getElementById('extraList').innerHTML =
-    STATE.inputs.extra.map(f=>`<span class="filechip">${esc(f.name)}</span>`).join('');
+  for(const f of files){
+    if(!/\.csv$/i.test(f.name) && f.type!=='text/csv') continue;
+    try{
+      const content = await readCsv(f);
+      const existing = STATE.inputs.extra.findIndex(x=>x.name===f.name);
+      if(existing>=0) STATE.inputs.extra[existing] = {name:f.name, content};   // same name -> update
+      else STATE.inputs.extra.push({name:f.name, content});                    // else -> ADD
+    }catch(e){}
+  }
+  el.value = '';   // reset so picking again ADDS more instead of replacing
+  renderExtraList();
   updateGate();
 }
+function renderExtraList(){
+  const el = document.getElementById('extraList');
+  if(!el) return;
+  el.innerHTML = STATE.inputs.extra.map((f,i)=>
+    `<span class="filechip">${esc(f.name)}<button type="button" class="chip-x" title="Remove" onclick="removeExtra(${i})">×</button></span>`
+  ).join('');
+}
+function removeExtra(i){ STATE.inputs.extra.splice(i,1); renderExtraList(); updateGate(); }
 function updateGate(){
   const i = STATE.inputs || {};
   const ok = !!(i.pnl && i.meta && (i.website||'').trim());
