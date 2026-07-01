@@ -376,6 +376,36 @@ def refresh_all():
     return out
 
 
+SPEND_BUCKET_THRESHOLD = 3540  # weekly spend floor for HIT bucket rules
+
+
+def _bucket_flags(wp):
+    """Bucket-health / hit flags from weekly P&L (11011). W1=most recent week.
+    >-20 (health): W1 PnL > -20 & W1 spend > 3540
+    Potential:  PnL >= 5 & spend > 3540 (W1)
+    Objective:  PnL >= 5 in W1 & W2, spend > 3540 in both
+    Subjective: PnL >= 5 in W1, PnL > 3 in W2, spend > 3540 in both
+    Missed Hit: PnL >= 5 in W2 & W3, spend > 3540 in both
+    """
+    def n(x):
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return None
+    w1p, w2p, w3p = n(wp.get("w1_pnl")), n(wp.get("w2_pnl")), n(wp.get("w3_pnl"))
+    w1s, w2s, w3s = n(wp.get("w1_spend")), n(wp.get("w2_spend")), n(wp.get("w3_spend"))
+    S = SPEND_BUCKET_THRESHOLD
+    ge = lambda a, b: a is not None and a >= b
+    gt = lambda a, b: a is not None and a > b
+    return {
+        "bucket_health": gt(w1p, -20) and gt(w1s, S),
+        "potential":     ge(w1p, 5) and gt(w1s, S),
+        "objective":     ge(w1p, 5) and ge(w2p, 5) and gt(w1s, S) and gt(w2s, S),
+        "subjective":    ge(w1p, 5) and gt(w2p, 3) and gt(w1s, S) and gt(w2s, S),
+        "missed_hit":    ge(w2p, 5) and ge(w3p, 5) and gt(w2s, S) and gt(w3s, S),
+    }
+
+
 def _clean(v):
     """Normalize Metabase placeholders ('-', '', None) to None."""
     if v is None:
@@ -535,7 +565,9 @@ def seller(req: SellerReq):
         series = _get_card_cache(METRICS_CARD).get(sid) or []
     except HTTPException:
         series = []
-    daily_metrics = [r for r in series if start <= str(r.get("date", ""))[:10] <= end] or series[-30:]
+    # daily trend uses FIXED recent windows (last 3/7/14d), NOT the picker range
+    # (the range drives only the changelog). Return the last 14 days.
+    daily_metrics = series[-14:]
 
     # product-quality (PQ) flags from card 10773 — latest non-null values
     def _latest(field):
@@ -570,6 +602,7 @@ def seller(req: SellerReq):
         "last_ts_actions": _clean(ts.get("last_ts_actions")),
         "last_7d_meta_spend": _clean(ts.get("last_7_days__meta_spend")),
     }
+    buckets = _bucket_flags(weekly_pnl)
 
     if not m and not b and not b2 and not cat and not daily_metrics and not changelog:
         raise HTTPException(404, f"No data found for seller_id '{sid}'")
@@ -632,6 +665,7 @@ def seller(req: SellerReq):
         "changelog": changelog,
         "demand_products": demand_products,
         "weekly_pnl": weekly_pnl,
+        "buckets": buckets,
         "last_ts": last_ts,
     }
 
@@ -711,7 +745,10 @@ def plan(req: PlanReq):
         "after a Website NavigationBar change on 13 Jun — likely culprit, revert/test'). Be explicit "
         "about the correlation and your confidence; say so if there's no clear link.\n"
         "- From weekly_pnl (w1/w2/w3 spend and P&L%): read the 3-week trajectory — is P&L improving or "
-        "declining, did it turn negative, is spend rising while P&L falls? Call out the trend explicitly.\n"
+        "declining, did it turn negative, is spend rising while P&L falls? Call out the trend explicitly. "
+        "The seller data also includes 'buckets' (bucket_health / potential / objective / subjective / "
+        "missed_hit true/false per HIT rules: spend>3540 & P&L thresholds). Use the bucket status to frame "
+        "how close the account is to a stable HIT and what specifically is missing to reach the next bucket.\n"
         "- From last_ts (the PREVIOUS troubleshoot): last_ts_actions is what was advised last time (on "
         "last_ts_date). CHECK the current data to judge whether those actions were done and whether they "
         "worked (e.g. if last TS said 'reduce cancellation >5%', is cancellation still high now?). Do NOT "
