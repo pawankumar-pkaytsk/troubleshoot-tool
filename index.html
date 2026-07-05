@@ -285,6 +285,15 @@
   .dp-btn.mp{color:#a5b4fc;border-color:rgba(99,102,241,.3);background:var(--primary-soft)}
   .dp-btn.mp:hover{filter:brightness(1.1)}
 
+  /* ---------- RTO breakdown ---------- */
+  .rto-h{font-size:11.5px;color:var(--txt-3);margin:0 0 8px;font-weight:600}
+  .rto-list{display:flex;flex-direction:column}
+  .rto-row{display:flex;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px dashed var(--line)}
+  .rto-row:last-child{border-bottom:none}
+  .rto-name{flex:1;font-size:13.5px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .rto-meta{font-size:11.5px;color:var(--txt-3)}
+  .rto-flag{font-size:12px;font-weight:700;padding:3px 10px;border-radius:999px;min-width:70px;text-align:center}
+
   /* ---------- product quality ---------- */
   .pq-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   .pq{padding:14px;border:1px solid var(--line);border-radius:var(--r);background:var(--bg)}
@@ -889,6 +898,25 @@ function demandCard(items, loading){
     <div class="dp-list">${rows}${more}</div></div>`;
 }
 
+/* ---------- RTO breakdown (dashboards 266 city / 187 courier) ---------- */
+function rtoCard(rto, loading){
+  const head = `<div class="label"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 3v6h6"/></svg> RTO breakdown <span class="rng">high-return cities &amp; couriers</span></div>`;
+  if (loading) return `<div class="card reveal" style="animation-delay:.156s">${head}<div class="empty" style="padding:18px"><span class="spin" style="display:inline-block;vertical-align:middle"></span> &nbsp;Checking RTO by city &amp; courier…</div></div>`;
+  rto = rto || {};
+  const cities = rto.cities || [], couriers = rto.couriers || [];
+  if (!cities.length && !couriers.length){
+    return `<div class="card reveal" style="animation-delay:.156s">${head}<div class="empty" style="padding:18px">No RTO breakdown for this window.</div></div>`;
+  }
+  const pct = v => v==null ? '—' : (+v).toFixed(0)+'%';
+  const cls = v => (+v>=40?'d-hold':(+v>=25?'d-test':'d-run'));
+  const cityRows = cities.slice(0,8).map(c=>`<div class="rto-row"><span class="rto-name">${esc(c.city)}</span><span class="rto-meta">${c.total!=null?(+c.total)+' orders':''}</span><span class="rto-flag ${cls(c.rto)}">${pct(c.rto)} RTO</span></div>`).join('');
+  const courRows = couriers.slice(0,6).map(c=>`<div class="rto-row"><span class="rto-name">${esc(c.courier)}</span><span class="rto-meta">${c.delivered!=null?(+c.delivered)+' delivered':''}</span><span class="rto-flag ${cls(c.rto)}">${pct(c.rto)} RTO</span></div>`).join('');
+  return `<div class="card reveal" style="animation-delay:.156s">${head}
+    ${cities.length?`<div class="rto-h">Top RTO cities (consider excluding the worst with ≥30 orders)</div><div class="rto-list">${cityRows}</div>`:''}
+    ${couriers.length?`<div class="rto-h" style="margin-top:14px">RTO by courier</div><div class="rto-list">${courRows}</div>`:''}
+  </div>`;
+}
+
 /* ---------- weekly P&L + spend (card 11011) ---------- */
 function weeklyPnlCard(wp){
   wp = wp || {};
@@ -1012,6 +1040,8 @@ function renderSeller(d){
 
   <div id="demandSlot">${demandCard(null, true)}</div>
 
+  <div id="rtoSlot">${rtoCard(null, true)}</div>
+
   ${inputsCard(d)}
 
   <div class="plancta">
@@ -1044,22 +1074,23 @@ function renderSeller(d){
 
 /* ---------- lazy insights (changelog + demand) ---------- */
 async function loadInsights(d){
-  const fill = (changelog, demand) => {
-    if (STATE.seller){ STATE.seller.changelog = changelog; STATE.seller.demand_products = demand; }
+  const fill = (changelog, demand, rto) => {
+    if (STATE.seller){ STATE.seller.changelog = changelog; STATE.seller.demand_products = demand; STATE.seller.rto = rto; }
     const cs = document.getElementById('changelogSlot'); if (cs) cs.innerHTML = changelogCard(changelog, d.range);
     const ds = document.getElementById('demandSlot'); if (ds) ds.innerHTML = demandCard(demand);
+    const rs = document.getElementById('rtoSlot'); if (rs) rs.innerHTML = rtoCard(rto);
   };
-  // sample mode: mock already carries changelog + demand
-  if (!API_BASE){ fill(d.changelog || [], d.demand_products || []); return; }
+  // sample mode: mock already carries changelog + demand + rto
+  if (!API_BASE){ fill(d.changelog || [], d.demand_products || [], d.rto || null); return; }
   try{
     const r = await fetch(API_BASE + '/api/insights', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ seller_id: d.seller_id, start_date: d.range?.start, end_date: d.range?.end })});
     if(!r.ok) throw new Error('insights '+r.status);
     const ins = await r.json();
     // guard: ignore if the user has since loaded a different seller
-    if (STATE.seller && STATE.seller.seller_id === d.seller_id) fill(ins.changelog || [], ins.demand_products || []);
+    if (STATE.seller && STATE.seller.seller_id === d.seller_id) fill(ins.changelog || [], ins.demand_products || [], ins.rto || null);
   }catch(e){
-    fill([], []);
+    fill([], [], null);
   }
 }
 
@@ -1389,6 +1420,7 @@ function mockSeller(id, mode, start, end){
     category:{l1:'clothing-shoes-and-accessories',l2:l2cat,l3:sub[0]}, benchmark:BENCHMARKS[l2cat],
     range:{start:start||metrics[0].date, end:end||metrics[metrics.length-1].date},
     daily_metrics:metrics, pq:{lifetime:metrics[metrics.length-1].lifetime_avg_pq, last_15d:metrics[metrics.length-1].last_15d_avg_pd}, changelog:changelog,
+    rto:{cities:[{city:'Hyderabad',total:75,delivered:38,rto:50},{city:'Jaipur',total:40,delivered:25,rto:38},{city:'Mumbai',total:120,delivered:96,rto:20}],couriers:[{courier:'Maruti Surface',delivered:0,rto:100},{courier:'DTDC Surface',delivered:12,rto:50},{courier:'Delhivery',delivered:210,rto:22}]},
     weekly_pnl:{best_source:'new_pnl', w1_spend:r(15000,30000), w2_spend:r(15000,32000), w3_spend:r(18000,38000), w1_pnl:+(r(20,60)/10).toFixed(1), w2_pnl:+(r(-10,30)/10).toFixed(1), w3_pnl:+(r(-60,10)/10).toFixed(1)},
     last_ts:{total_ts_done:r(2,10), last_ts_date:(end||metrics[metrics.length-1].date), ts_type:'manual_ts', last_7d_meta_spend:r(3000,9000), last_ts_actions:'Educate seller to not do a lot of Cancellation. |DETAILS| Seller Cancellation (8.82%) between last week is above the threshold of 5%. Reduce cancellations to protect delivery and ROAS.'},
     demand_products:[

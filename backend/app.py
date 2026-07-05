@@ -94,6 +94,10 @@ DEMAND_PARAM = {"seller": "c6ad588d", "image": "e35b7e93",
 DEMAND_DEFAULTS = {"image": 92, "rating_cutoff": 10, "significant": 20}  # dashboard defaults
 DEMAND_TTL = 12 * 3600
 DEMAND_TOPN = 25
+
+# RTO dashboards (db2, cheap) — per-seller + date. City-wise (266) and LP/courier-wise (187).
+RTO_CITY = {"dash": 266, "dashcard": 1988, "card": 1806, "seller": "50c1eb23", "start": "b90603da", "end": "7a7c7f27"}
+RTO_LP   = {"dash": 187, "dashcard": 1440, "card": 855,  "seller": "4991551a", "start": "d1d1bf4",  "end": "3083b6c3"}
 BUSINESS_SELLER_PARAM_ID = "a45e1c84-6dc1-42fc-93da-79f43ee84255"  # card 10353
 CATEGORY_SELLER_PARAM_ID = "232ba3d0-4861-4ebd-8775-5f8b9d488737"  # card 10362
 
@@ -305,6 +309,35 @@ def _get_category(seller_id):
     return data
 
 
+def _get_rto(seller_id, start, end):
+    """Per-seller RTO breakdown by city (dash 266) + courier/LP (dash 187), db2. Highest-RTO first."""
+    out = {"cities": [], "couriers": []}
+    try:
+        p = [{"id": RTO_CITY["seller"], "value": str(seller_id)},
+             {"id": RTO_CITY["start"], "value": start}, {"id": RTO_CITY["end"], "value": end}]
+        rows = _mb(f"/api/dashboard/{RTO_CITY['dash']}/dashcard/{RTO_CITY['dashcard']}/card/{RTO_CITY['card']}/query/json", "POST", {"parameters": p})
+        cities = [{"city": _clean(r.get("city name")), "total": _clean(r.get("total")),
+                   "delivered": _clean(r.get("delivered")), "rto": _clean(r.get("rto_%"))}
+                  for r in (rows if isinstance(rows, list) else []) if isinstance(r, dict)]
+        cities = [c for c in cities if c["city"] and _num(c["total"]) >= 15]
+        cities.sort(key=lambda c: _num(c["rto"]), reverse=True)
+        out["cities"] = cities[:15]
+    except Exception:
+        pass
+    try:
+        p = [{"id": RTO_LP["seller"], "value": str(seller_id)},
+             {"id": RTO_LP["start"], "value": start}, {"id": RTO_LP["end"], "value": end}]
+        rows = _mb(f"/api/dashboard/{RTO_LP['dash']}/dashcard/{RTO_LP['dashcard']}/card/{RTO_LP['card']}/query/json", "POST", {"parameters": p})
+        lp = [{"courier": _clean(r.get("logistic")), "delivered": _clean(r.get("delivered")), "rto": _clean(r.get("rto_prec"))}
+              for r in (rows if isinstance(rows, list) else []) if isinstance(r, dict)]
+        lp = [x for x in lp if x["courier"]]
+        lp.sort(key=lambda x: _num(x["rto"]), reverse=True)
+        out["couriers"] = lp[:10]
+    except Exception:
+        pass
+    return out
+
+
 _demand_cache = {}
 _demand_lock = threading.Lock()
 
@@ -502,17 +535,19 @@ def insights(req: InsightsReq):
         cached_log = c["data"] if c and time.time() - c["ts"] < 1800 else None
 
     from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=2) as ex:
+    with ThreadPoolExecutor(max_workers=3) as ex:
         f_log = ex.submit((lambda: cached_log) if cached_log is not None
                           else (lambda: _safe_call(_get_changelog, sid, start, end, default=[])))
         f_dem = ex.submit(_safe_call, _get_demand, sid, default=[])
+        f_rto = ex.submit(_safe_call, _get_rto, sid, start, end, default={"cities": [], "couriers": []})
         changelog = f_log.result()
         demand = f_dem.result()
+        rto = f_rto.result()
 
     if cached_log is None:
         with _changelog_lock:
             _changelog_cache[key] = {"data": changelog, "ts": time.time()}
-    return {"changelog": changelog, "demand_products": demand, "range": {"start": start, "end": end}}
+    return {"changelog": changelog, "demand_products": demand, "rto": rto, "range": {"start": start, "end": end}}
 
 
 def _safe_call(fn, *args, default=None):
@@ -839,6 +874,81 @@ RED FLAGS: OOS mid-scale (algorithm shifts to inferior products, Marketing% spik
 BEYOND 5K (HIT2 = 2 profitable weeks at 5K): retargeting layer at ~20% of budget (7d/14d/30d warm, CPP where CTR>4%, Website Visitor for 2K+ weekly visitors, Purchase LLA for 50+ lifetime purchases).
 
 ICP: High ICP (>=7) + High Spend = scale fast (best success ~37%); Low ICP + Low Spend = hold & validate (~20%). More unique products + one proven creative format + RTO in range + responsive seller/stock = the pattern of accounts that scaled."""
+
+
+# Distilled from the 6 ShopDeck troubleshooting methodology docs. Editable in Upstash (kb:methodology);
+# this is the fallback/default. Injected into the plan so the AI reasons like a senior TS analyst.
+TROUBLESHOOT_METHODOLOGY = """SHOPDECK TROUBLESHOOTING METHODOLOGY — reason like a senior analyst, in this order:
+
+1) CONTEXT FIRST (never diagnose cold). Same numbers mean different things by context: seller persona
+(profit-obsessed & RTO-sensitive vs growth/risk-taker), products (AOV, marketplaces, USP, PQ; ShopDeck price
+is often ~20% above marketplace = a demand/RTO driver), account HISTORY (find the MOST PROFITABLE period —
+that is the 'normal' to rebuild toward), and the LAST troubleshoot (was it implemented? did it work?).
+Read as 'recoverable' if a profitable period exists, 'structural' if pricing/mix/geo work against them.
+ALWAYS separate RTO problems from profitability problems — different levers.
+
+2) INFLECTION POINT (when did it change). Find the week Profit% flipped/declined; for a sudden change the
+week is obvious, for gradual find where the decline STARTED (not just the biggest drop). Drop to day-level
+for the exact day. Default weekly; for RTO use weekly (daily RTO is noise). Compare spend AND order volume
+together — a spend rise matched by proportional purchases is NOT an anomaly. Anchor everything to the
+seller's own inflection/best week.
+
+3) METRIC IDENTIFICATION (what broke). Independent levers: Marketing (spend/GMV), RTO, Cancellation
+(seller-side & customer-side), Logistics/forward charge, Pricing (COGS+AOV). Net P&L depends on all.
+Pick the metric with the MOST P&L impact (mentally: bring it back to its profitable value — does P&L
+recover? if not, next metric). Isolate ONE metric at a time. Priority: RTO and Marketing spend/GMV are
+usually highest impact; Cancellation and Pricing secondary.
+
+4) USE CASE -> direction. Marketing: never-picked (ramp), fluctuating (>~15% week-to-week variance ->
+stabilise to the good-day pattern), recent-drop (recover to prior level), worse-with-scaling (pull back /
+fix before scaling). RTO: always-high (manage, not the primary lever), increased-over-time (restore to last
+stable week), fluctuating (stabilise), improving (fine-tune). Pricing: unexplained change (reconcile),
+find-right-price (test).
+
+BENCHMARKS: spend/GMV ~13.5% is the profitability line (product-level ideal 40-45% for AOV 500-1000).
+Break-even ROAS rises with RTO (~1.65x at 0% RTO -> ~2.1x at 31% RTO). Need ~30 orders (or 3 days) before
+trusting a segment/campaign's RTO or profit. Any campaign >5% of spend/GMV (account >20%) should be
+rebalanced IF it has enough data.
+
+READING DATA VIEWS (right grain, right order): Change Log FIRST — find the exact date a metric shifted and
+diff before/after (catalogue->Marketing; best/worst-seller toggles->Marketing+RTO; cost-price->COGS;
+product-page/website->RTO; payment settings->Marketing+RTO). Cuts: state, CITY (a state's high RTO is often
+ONE city — remove the city, not the state), tier, campaign, LP/courier, payment mode, gender, age,
+platform/placement, ad set (audience), ad (creative). OOS: check the marketing-log date range.
+EXCLUDE a segment only if it stays worse over a meaningful window (e.g. RTO drives >10% loss) AND has >=30
+orders. Removing age/gender/placement is HIGH RISK (blocks learning/reach) — fix creative/audience first.
+DOUBLE DOWN via NEW campaigns (low risk) as a tracked trial, then revert or scale.
+
+SMALL-ACTION CHECKLIST (fix red flags): O2S <=1.5d, S2A <=4.5d, FAD >=55%, seller-cancellation ->0,
+customer-cancellation 0-15%, PPH>3d = 0, COGS 25-50%, PPO->BuyNow >10%, BuyNow->Address >32%,
+Address->Charged >=55%, live products >30, product groups >=4, retargeting-coupon conv >13%, avg discount
+<50%. Config ON: online payment + discount, partial COD + discount, Pixel, CAPI, ad-account id. Website:
+clean photos (no text), size charts, testimonials, ATC coupons >=2, post-delivery 20%-off coupon, Bumper
+timer 240min. Campaign setup: objective=Sales, Advantage Campaign Budget ON, maximise conversions, purchase
+event, Advantage+ placements ON, Multi-advertiser ON, correct URL params, Instagram connected.
+
+CONTEXT SHIFTS: online-payment share depends on trust/rating — fix audience before restricting payment.
+Budget-mix skew (e.g. 30% forced to banners+videos) is a red flag — rebalance toward A+A + retargeting.
+RTO fix != profitability fix (an LP/courier change may not lower RTO)."""
+
+
+_kb_cache = {"text": None, "ts": 0}
+
+
+def _get_methodology():
+    """Return the troubleshooting methodology KB — Upstash (editable) first, else the built-in default. Cached 1h."""
+    if _kb_cache["text"] is not None and time.time() - _kb_cache["ts"] < 3600:
+        return _kb_cache["text"]
+    text = TROUBLESHOOT_METHODOLOGY
+    try:
+        v = _redis(["GET", "kb:methodology"])
+        if v and isinstance(v, str) and len(v) > 200:
+            text = v
+    except Exception:
+        pass
+    _kb_cache["text"] = text
+    _kb_cache["ts"] = time.time()
+    return text
 
 
 CSV_CHAR_LIMIT = 35000  # cap each CSV sent to the model (keeps token use + latency sane)
@@ -1172,6 +1282,8 @@ def plan(req: PlanReq):
         "  • Scale rule: when to raise budget and by how much\n"
         "Make the blueprint copy-paste ready so they can build it without guessing.\n"
     )
+    # inject the ShopDeck troubleshooting methodology so the AI reasons like a senior analyst
+    sys_prompt += "\n\n=== APPLY THIS TROUBLESHOOTING METHODOLOGY ===\n" + _get_methodology()
 
     cats = (
         "1. website  — landing page / storefront / pixel / catalogue / CRO fixes\n"
@@ -1186,8 +1298,11 @@ def plan(req: PlanReq):
              "levers) and 'top_priorities' (3-5 highest-impact actions across ALL categories, in order, each "
              "prefixed with its area, e.g. 'Campaign: cut the Open campaign at 2.2x').\n")
     if req.prior_plans:
-        cats += ("This seller has PAST AI plans (below). In the summary note progress since last time; "
-                 "escalate repeated unresolved items rather than restating them.\n")
+        cats += ("This seller has PAST AI plans (below). Do a LEARNING REVIEW: compared to the last plan and "
+                 "current data, explicitly flag in the summary (and fold into actions) — IMPROVED (what got "
+                 "better since last TS -> keep running), WORSENED (what got worse), REVERT (a past change that "
+                 "hurt and should be undone), and KEEP (working actions to continue). Don't just restate "
+                 "unresolved items — escalate them to a stronger next step.\n")
 
     user_prompt = (
         f"Seller track: {track}.\n"
