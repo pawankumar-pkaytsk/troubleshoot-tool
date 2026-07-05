@@ -713,6 +713,8 @@ function categoryCard(cat, bm){
       ${lvl('Category Level 2', cat.l2)}
       <svg class="icon icon-sm sep" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
       ${lvl('Category Level 3', cat.l3)}
+      <svg class="icon icon-sm sep" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
+      ${lvl('Category Level 4', cat.l4)}
     </div>`;
   let bmHtml = '';
   if (bm){
@@ -898,6 +900,24 @@ function demandCard(items, loading){
     <div class="dp-list">${rows}${more}</div></div>`;
 }
 
+/* ---------- spend details (cards 2787 + 10065) ---------- */
+function spendCard(sp){
+  sp = sp || {};
+  const head = `<div class="label"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg> Spend details</div>`;
+  const has = ['today','yesterday','total','first_date','last_date'].some(k=>sp[k]!=null);
+  if(!has) return `<div class="card reveal" style="animation-delay:.135s">${head}<div class="empty" style="padding:18px">No spend data for this seller.</div></div>`;
+  const money=v=>v==null?'—':'₹'+Number(v).toLocaleString('en-IN',{maximumFractionDigits:0});
+  const dt=v=>v==null?'—':String(v).slice(0,10);
+  return `<div class="card reveal" style="animation-delay:.135s">${head}
+    <div class="kpis">
+      <div class="kpi"><div class="k">Today's spend</div><div class="v tnum">${money(sp.today)}</div></div>
+      <div class="kpi"><div class="k">Yesterday's spend</div><div class="v tnum">${money(sp.yesterday)}</div></div>
+      <div class="kpi"><div class="k">Total (lifetime) spend</div><div class="v tnum">${money(sp.total)}</div></div>
+      <div class="kpi"><div class="k">Active window</div><div class="v" style="font-size:15px">${dt(sp.first_date)} → ${dt(sp.last_date)}</div></div>
+    </div>
+  </div>`;
+}
+
 /* ---------- RTO breakdown (dashboards 266 city / 187 courier) ---------- */
 function rtoCard(rto, loading){
   const head = `<div class="label"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 3v6h6"/></svg> RTO breakdown <span class="rng">high-return cities &amp; couriers</span></div>`;
@@ -1011,9 +1031,9 @@ function renderSeller(d){
     <div class="card reveal" style="animation-delay:.1s">
       <div class="label"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 3v18h18"/><rect x="7" y="10" width="3" height="8"/><rect x="13" y="6" width="3" height="12"/></svg> Business details</div>
       <div class="kpis">
-        <div class="kpi"><div class="k">Products at go-live</div><div class="v tnum">${num(b.products_at_go_live)}</div></div>
-        <div class="kpi"><div class="k">AOV at go-live</div><div class="v tnum">${money(b.aov_at_gl)}</div></div>
-        <div class="kpi"><div class="k">COGS at go-live</div><div class="v tnum">${b.cogs_at_gl==null?'—':Number(b.cogs_at_gl).toLocaleString('en-IN')+'%'}</div></div>
+        <div class="kpi"><div class="k">Live SKUs</div><div class="v tnum">${b.live_skus==null?num(b.products_at_go_live):num(b.live_skus)}</div></div>
+        <div class="kpi"><div class="k">AOV <span style="color:var(--txt-3);font-weight:400">(spend&gt;3540 wk)</span></div><div class="v tnum">${b.aov_at_gl==null?'—':'₹'+Number(b.aov_at_gl).toLocaleString('en-IN',{maximumFractionDigits:0})}</div></div>
+        <div class="kpi"><div class="k">COGS <span style="color:var(--txt-3);font-weight:400">(card 2497)</span></div><div class="v tnum">${b.cogs_at_gl==null?'—':Number(b.cogs_at_gl).toFixed(1)+'%'}</div></div>
         <div class="kpi"><div class="k">Go-live status</div><div class="v" style="font-size:18px">${esc(m.go_live||'—')}</div></div>
       </div>
       <div style="margin-top:14px">
@@ -1025,6 +1045,8 @@ function renderSeller(d){
   </div>
 
   ${categoryCard(d.category, d.benchmark)}
+
+  ${spendCard(d.spend)}
 
   ${trendCard(d.daily_metrics)}
 
@@ -1416,8 +1438,9 @@ function mockSeller(id, mode, start, end){
     seller_id:id, company:['Rudra Rage','Lumière Home','Nova Apparel','Bloom Beauty','PeakFit Gear'][seed%5], mode,
     status: [['Live','s-ok'],['Live · unassigned','s-warn'],['Not live yet','s-warn']][seed%3],
     mapping:{gc:pick(0),gm:pick(1),kae:pick(2),kam:pick(3),growth_lead:pick(4),golive_poc:pick(5),onboarding_poc:null,assistant_manager:null,profitability_am:null,go_live:seed%3===2?'No':'Yes'},
-    business:{company:['Rudra Rage','Lumière Home','Nova Apparel','Bloom Beauty','PeakFit Gear'][seed%5],website:'www.example.com',contact:'9'+r(100000000,899999999),offers:['Buy 1 Get 1','Flat 20% off','Free shipping',null][seed%4],products_at_go_live:r(20,300),aov_at_gl:r(300,1400)+0.9,cogs_at_gl:r(10,45)},
-    category:{l1:'clothing-shoes-and-accessories',l2:l2cat,l3:sub[0]}, benchmark:BENCHMARKS[l2cat],
+    business:{company:['Rudra Rage','Lumière Home','Nova Apparel','Bloom Beauty','PeakFit Gear'][seed%5],website:'www.example.com',contact:'9'+r(100000000,899999999),offers:['Buy 1 Get 1','Flat 20% off','Free shipping',null][seed%4],products_at_go_live:r(20,300),live_skus:r(40,400),aov_at_gl:r(600,1500),cogs_at_gl:r(30,48)},
+    spend:{today:r(0,3000),yesterday:r(500,4000),total:r(50000,900000),first_date:'2026-04-15',last_date:'2026-07-04'},
+    category:{l1:'clothing-shoes-and-accessories',l2:l2cat,l3:sub[0],l4:sub[1]}, benchmark:BENCHMARKS[l2cat],
     range:{start:start||metrics[0].date, end:end||metrics[metrics.length-1].date},
     daily_metrics:metrics, pq:{lifetime:metrics[metrics.length-1].lifetime_avg_pq, last_15d:metrics[metrics.length-1].last_15d_avg_pd}, changelog:changelog,
     rto:{cities:[{city:'Hyderabad',total:75,delivered:38,rto:50},{city:'Jaipur',total:40,delivered:25,rto:38},{city:'Mumbai',total:120,delivered:96,rto:20}],couriers:[{courier:'Maruti Surface',delivered:0,rto:100},{courier:'DTDC Surface',delivered:12,rto:50},{courier:'Delhivery',delivered:210,rto:22}]},
