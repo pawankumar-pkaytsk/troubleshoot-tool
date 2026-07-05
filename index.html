@@ -1034,6 +1034,7 @@ function renderSeller(d){
         <div class="kpi"><div class="k">Live SKUs</div><div class="v tnum">${b.live_skus==null?num(b.products_at_go_live):num(b.live_skus)}</div></div>
         <div class="kpi"><div class="k">AOV <span style="color:var(--txt-3);font-weight:400">(spend&gt;3540 wk)</span></div><div class="v tnum">${b.aov_at_gl==null?'—':'₹'+Number(b.aov_at_gl).toLocaleString('en-IN',{maximumFractionDigits:0})}</div></div>
         <div class="kpi"><div class="k">COGS <span style="color:var(--txt-3);font-weight:400">(card 2497)</span></div><div class="v tnum">${b.cogs_at_gl==null?'—':Number(b.cogs_at_gl).toFixed(1)+'%'}</div></div>
+        <div class="kpi"><div class="k">Cancellation <span style="color:var(--txt-3);font-weight:400">(2wk, ideal &lt;5%)</span></div><div class="v tnum ${b.cancellation_high?'down':''}">${b.cancellation_pct==null?'—':Number(b.cancellation_pct).toFixed(1)+'%'}${b.cancellation_high?' ⚠':''}</div></div>
         <div class="kpi"><div class="k">Go-live status</div><div class="v" style="font-size:18px">${esc(m.go_live||'—')}</div></div>
       </div>
       <div style="margin-top:14px">
@@ -1438,7 +1439,7 @@ function mockSeller(id, mode, start, end){
     seller_id:id, company:['Rudra Rage','Lumière Home','Nova Apparel','Bloom Beauty','PeakFit Gear'][seed%5], mode,
     status: [['Live','s-ok'],['Live · unassigned','s-warn'],['Not live yet','s-warn']][seed%3],
     mapping:{gc:pick(0),gm:pick(1),kae:pick(2),kam:pick(3),growth_lead:pick(4),golive_poc:pick(5),onboarding_poc:null,assistant_manager:null,profitability_am:null,go_live:seed%3===2?'No':'Yes'},
-    business:{company:['Rudra Rage','Lumière Home','Nova Apparel','Bloom Beauty','PeakFit Gear'][seed%5],website:'www.example.com',contact:'9'+r(100000000,899999999),offers:['Buy 1 Get 1','Flat 20% off','Free shipping',null][seed%4],products_at_go_live:r(20,300),live_skus:r(40,400),aov_at_gl:r(600,1500),cogs_at_gl:r(30,48)},
+    business:{company:['Rudra Rage','Lumière Home','Nova Apparel','Bloom Beauty','PeakFit Gear'][seed%5],website:'www.example.com',contact:'9'+r(100000000,899999999),offers:['Buy 1 Get 1','Flat 20% off','Free shipping',null][seed%4],products_at_go_live:r(20,300),live_skus:r(40,400),aov_at_gl:r(600,1500),cogs_at_gl:r(30,48),cancellation_pct:+(r(20,180)/10).toFixed(1),cancellation_high:(r(20,180)/10)>5},
     spend:{today:r(0,3000),yesterday:r(500,4000),total:r(50000,900000),first_date:'2026-04-15',last_date:'2026-07-04'},
     category:{l1:'clothing-shoes-and-accessories',l2:l2cat,l3:sub[0],l4:sub[1]}, benchmark:BENCHMARKS[l2cat],
     range:{start:start||metrics[0].date, end:end||metrics[metrics.length-1].date},

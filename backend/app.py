@@ -337,6 +337,12 @@ def _get_pnl_csv(seller_id):
             aov = _fnum(r.get("aov"))
             if aov is not None:
                 break
+    # Cancellation: recent 2 weeks with a value (ideal <5%; >5% bleeds P&L via higher CPP)
+    cw = [{"week": r.get("year_week"), "pct": _fnum(r.get("cancelled_perc"))}
+          for r in rows if _fnum(r.get("cancelled_perc")) is not None][:2]
+    cancel_recent = round(sum(x["pct"] for x in cw) / len(cw), 2) if cw else None
+    cancellation = {"recent_pct": cancel_recent, "weeks": cw,
+                    "high": (cancel_recent is not None and cancel_recent > 5)}
     recent = rows[:PNL_WEEKS][::-1]  # most recent N, chronological, for the CSV
     import io
     import csv as _csvmod
@@ -346,7 +352,7 @@ def _get_pnl_csv(seller_id):
     w.writeheader()
     for r in recent:
         w.writerow({k: r.get(k) for k in cols})
-    return buf.getvalue(), len(recent), aov
+    return buf.getvalue(), len(recent), aov, cancellation
 
 
 def _get_rto(seller_id, start, end):
@@ -776,9 +782,9 @@ def seller(req: SellerReq):
 
     cat = _get_category(sid)   # coherent l1>l2>l3 chain (card 3757, per-seller, cached)
     try:
-        pnl_csv, pnl_weeks, pnl_aov = _get_pnl_csv(sid)   # auto P&L (1880) + AOV from spend>3540 week
+        pnl_csv, pnl_weeks, pnl_aov, cancellation = _get_pnl_csv(sid)   # P&L (1880) + AOV + recent cancellation
     except Exception:
-        pnl_csv, pnl_weeks, pnl_aov = "", 0, None
+        pnl_csv, pnl_weeks, pnl_aov, cancellation = "", 0, None, {"recent_pct": None, "weeks": [], "high": False}
     changelog = []          # loaded via POST /api/insights
     demand_products = []     # loaded via POST /api/insights
 
@@ -827,6 +833,8 @@ def seller(req: SellerReq):
         # AOV from card 1880 (spend>3540 week); COGS from card 2497 (cosgs). Fall back to 10353.
         "aov_at_gl":         pnl_aov if pnl_aov is not None else _clean(b.get("aov_at_gl")),
         "cogs_at_gl":        _clean(cg.get("cosgs")) if _clean(cg.get("cosgs")) is not None else _clean(b.get("cogs_at_gl")),
+        "cancellation_pct":  cancellation.get("recent_pct"),   # recent 2-week cancellation % (card 1880)
+        "cancellation_high": cancellation.get("high"),         # True if > 5% (bleeds P&L)
         "website_source":    (BUSINESS_CARD if _clean(b.get("website")) else
                               (BUSINESS_BACKUP_CARD if _clean(b2.get("website")) else None)),
     }
@@ -1340,6 +1348,15 @@ def plan(req: PlanReq):
     )
     # inject the ShopDeck troubleshooting methodology so the AI reasons like a senior analyst
     sys_prompt += "\n\n=== APPLY THIS TROUBLESHOOTING METHODOLOGY ===\n" + _get_methodology()
+
+    # MANDATORY flag: high cancellation must always produce an action
+    if req.seller.get("business", {}).get("cancellation_high"):
+        cp = req.seller.get("business", {}).get("cancellation_pct")
+        sys_prompt += (
+            f"\n\nMANDATORY: this seller's recent 2-week CANCELLATION is {cp}% (card 1880), well above the "
+            "5% ideal. You MUST include a HIGH-priority action (in 'outside') telling the growth team to get "
+            "the seller to STOP cancelling orders — seller-side cancellations inflate CPP (cost per purchase) "
+            "and directly bleed P&L. Cite the exact cancellation% and the <5% target.")
 
     cats = (
         "1. website  — landing page / storefront / pixel / catalogue / CRO fixes\n"
